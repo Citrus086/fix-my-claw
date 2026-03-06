@@ -45,11 +45,28 @@ Tune for your workload to balance recall vs false positives.
 
 ### Current Default Sensitivity
 
-Defaults are tuned to be more sensitive for ping-pong incidents:
+Defaults are tuned for short multi-agent cycle incidents, plus a conservative stagnation fallback for low-novelty tails:
 
-- `min_stop_signals = 2`
 - `max_repeat_same_signature = 3`
-- `min_ping_pong_turns = 4`
+- `min_cycle_repeated_turns = 4`
+- `max_cycle_period = 4`
+- `stagnation_enabled = true`
+- `stagnation_min_events = 8`
+- `stagnation_min_roles = 2`
+- `stagnation_max_novel_cluster_ratio = 0.34`
+
+Preferred config names:
+
+- `min_cycle_repeated_turns`
+- `max_cycle_period`
+- `stagnation_enabled`
+- `stagnation_min_events`
+- `stagnation_min_roles`
+- `stagnation_max_novel_cluster_ratio`
+
+Legacy compatibility:
+
+- `min_ping_pong_turns` is still accepted as an alias for `min_cycle_repeated_turns`
 
 ## Suggested Follow-up Contributions
 

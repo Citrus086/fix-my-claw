@@ -8,33 +8,6 @@
 一个开箱即用的 OpenClaw 守护与自动恢复工具，让服务自己保持健康。
 
 
-Agent Reach 状态
-✅ 装好即用：
-✅ GitHub 仓库和代码 — 完整可用（读取、搜索、Fork、Issue、PR 等）
-❌ YouTube 视频和字幕 — yt-dlp 未安装。安装：pip install yt-dlp
-✅ RSS/Atom 订阅源 — 可读取 RSS/Atom 源
-✅ 全网语义搜索 — 全网语义搜索可用（免费，无需 API Key）
-✅ 任意网页 — 通过 Jina Reader 读取任意网页（curl https://r.jina.ai/URL）
-
-🔍 搜索（mcporter 即可解锁）：
-✅ Twitter/X 推文 — 完整可用（读取、搜索推文）
-⬜ Reddit 帖子和评论 — 无代理。服务器 IP 可能被 Reddit 封锁。配置代理：
-agent-reach configure proxy http://user:pass@ip:port
-⬜ B站视频和字幕 — yt-dlp 未安装。安装：pip install yt-dlp
-
-🔧 配置后可用：
-⚠️ 小红书笔记 — MCP 连接异常，检查 xiaohongshu-mcp 服务是否在运行
-⚠️ 抖音短视频 — MCP 已连接但调用异常，检查 douyin-mcp-server 服务是否在运行
-⬜ LinkedIn 职业社交 — mcporter 已装但 LinkedIn MCP 未配置。运行：
-pip install linkedin-scraper-mcp
-mcporter config add linkedin http://localhost:3000/mcp
-⬜ Boss直聘职位搜索 — mcporter 已装但 Boss直聘 MCP 未配置。
-详见 https://github.com/mucsbr/mcp-bosszp
-✅ 微信公众号文章 — 完整可用（搜索 + 阅读公众号文章）
-
-状态：6/13 个渠道可用
-运行 agent-reach setup 解锁更多渠道
-
 
 ## ✨ 效果与亮点
 
@@ -106,7 +79,8 @@ flowchart TD
 
 - 默认：`~/.fix-my-claw/config.toml`
 - 示例：`examples/fix-my-claw.toml`
-- 新增：`[anomaly_guard]` 可把 ping-pong/重复输出模式判定为不健康（即便 gateway 探针仍成功）。
+- 新增：`[anomaly_guard]` 可把多角色 cycle/重复输出模式判定为不健康（即便 gateway 探针仍成功）。
+- 新增：`StagnationDetector` 也会捕捉“最近很多 agent turn 围着同一语义反复打转，但没有形成干净周期”的低新颖度尾部。
 - `auto_dispatch_check` 现在按真实 handoff 分析：识别谁发起交接、交接给谁，再判断后续是否由非预期角色持续输出。
 - 新增：`[notify]` 可配置 Discord 通知与 yes/no 询问。
 - 说明：流程状态通知始终会发送；`yes/no` 询问仅在 `ai.enabled = true` 时生效。
@@ -114,6 +88,8 @@ flowchart TD
 - 说明：只接受严格回复 `是/否/yes/no`；不匹配会重问，累计 3 次不匹配则本轮默认不启用 Codex。
 - 扩展：`[repair]` 新增会话控制参数（`/stop`、`/new`、活跃会话筛选）。
 - 兼容：仍支持旧键名 `[loop_guard]`。
+- 推荐优先使用 `min_cycle_repeated_turns` 和 `max_cycle_period`；旧键 `min_ping_pong_turns` 仍作为兼容别名接受。
+- 低新颖度停滞检测可通过 `stagnation_enabled`、`stagnation_min_events`、`stagnation_min_roles`、`stagnation_max_novel_cluster_ratio` 调整。
 
 提示：如果 systemd/launchd 环境下找不到 `openclaw`，请把 `[openclaw].command` 配成绝对路径。
 
@@ -141,6 +117,7 @@ sudo systemctl enable --now fix-my-claw.service
 一键安装（单一入口）：
 
 ```bash
+pip install -e 
 ./deploy/launchd/install.sh
 source ~/.zshrc
 ```
@@ -153,8 +130,8 @@ source ~/.zshrc
 
 行为：
 
-- `openclaw gateway start` / `restart`：自动拉起监管后台
-- `openclaw gateway stop`：自动停止监管后台
+- 安装时如果 gateway 已在运行，会立即拉起 watchdog
+- `openclaw gateway start` / `restart` / `stop`：shell hook 会按 gateway 实际状态重新对齐 watchdog
 
 一键卸载：
 

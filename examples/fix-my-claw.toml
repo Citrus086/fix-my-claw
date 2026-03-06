@@ -52,14 +52,19 @@ read_limit = 20
 operator_user_ids = []
 
 [anomaly_guard]
-# Detect "looks healthy but stuck in orchestrator/builder ping-pong" patterns from recent logs.
+# Detect "looks healthy but stuck in multi-agent cycle/repetition" patterns from recent logs.
 enabled = true
 window_lines = 200
 probe_timeout_seconds = 15
 keywords_stop = ["stop", "halt", "abort", "cancel", "terminate", "停止", "立刻停止", "强制停止", "终止", "停止指令"]
 keywords_repeat = ["repeat", "repeating", "loop", "ping-pong", "重复", "死循环", "不断", "一直在重复", "重复汇报"]
 max_repeat_same_signature = 3
-min_ping_pong_turns = 4
+min_cycle_repeated_turns = 4
+max_cycle_period = 4
+stagnation_enabled = true
+stagnation_min_events = 8
+stagnation_min_roles = 2
+stagnation_max_novel_cluster_ratio = 0.34
 min_signature_chars = 16
 auto_dispatch_check = true
 dispatch_window_lines = 20

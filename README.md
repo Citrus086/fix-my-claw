@@ -81,7 +81,8 @@ All settings live in a single TOML file.
 
 - Default: `~/.fix-my-claw/config.toml`
 - Example: `examples/fix-my-claw.toml`
-- New: `[anomaly_guard]` can mark ping-pong/repetition patterns as unhealthy even when gateway probes still pass.
+- New: `[anomaly_guard]` can mark multi-agent cycle/repetition patterns as unhealthy even when gateway probes still pass.
+- New: `StagnationDetector` can also flag low-novelty recent tails where many agent turns keep circling the same semantic cluster without forming a clean cycle.
 - `auto_dispatch_check` now analyzes real handoffs: who delegated, who was the target, and whether an unexpected agent keeps speaking afterwards.
 - New: `[notify]` supports Discord notifications and yes/no approval prompts.
 - Note: status notifications are always sent; `yes/no` approval is only used when `ai.enabled = true`.
@@ -89,6 +90,8 @@ All settings live in a single TOML file.
 - Note: only strict replies `yes/no` or `是/否` are accepted; non-matching replies trigger a re-ask, and after 3 invalid replies AI repair is skipped for this incident.
 - Extended: `[repair]` adds session-level control knobs for `/stop`, `/new`, and active-session filtering.
 - Compatibility: legacy key `[loop_guard]` is still accepted.
+- Preferred knob names are `min_cycle_repeated_turns` and `max_cycle_period`; legacy `min_ping_pong_turns` is still accepted as an alias.
+- Additional stagnation knobs are `stagnation_enabled`, `stagnation_min_events`, `stagnation_min_roles`, and `stagnation_max_novel_cluster_ratio`.
 
 Tip: if `openclaw` isn’t on `PATH` under systemd/launchd, set `[openclaw].command` to an absolute path.
 
@@ -128,8 +131,8 @@ If `fix-my-claw` is not resolvable from your shell, pass it explicitly:
 
 Behavior:
 
-- `openclaw gateway start` / `restart`: auto-start watchdog
-- `openclaw gateway stop`: auto-stop watchdog
+- If gateway is already running during install, watchdog starts immediately
+- `openclaw gateway start` / `restart` / `stop`: shell hook re-syncs watchdog to actual gateway state
 
 One-click uninstall:
 

@@ -80,6 +80,59 @@ escape_sed_replacement() {
   printf '%s' "$1" | sed -e 's/[&|]/\\&/g'
 }
 
+gateway_running_state() {
+  local status_json compact_json
+  if ! command -v openclaw >/dev/null 2>&1; then
+    return 2
+  fi
+  if ! status_json="$(command openclaw gateway status --json 2>/dev/null)"; then
+    return 2
+  fi
+  compact_json="$(printf '%s' "$status_json" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$compact_json" in
+    *'"running":true'*|*'"running":"true"'*|*'"status":"running"'*|*'"state":"running"'*|*'"active":true'*|*'"active":"true"'*|*'"gatewayrunning":true'*|*'"gatewayrunning":"true"'*)
+      return 0
+      ;;
+    *'"running":false'*|*'"running":"false"'*|*'"status":"stopped"'*|*'"state":"stopped"'*|*'"active":false'*|*'"active":"false"'*|*'"gatewayrunning":false'*|*'"gatewayrunning":"false"'*)
+      return 1
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+start_watchdog_job() {
+  if ! launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+    launchctl bootstrap "$DOMAIN" "$DST_PLIST" >/dev/null 2>&1 || true
+  fi
+  launchctl enable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+  launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+}
+
+stop_watchdog_job() {
+  launchctl disable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+  launchctl bootout "$DOMAIN" "$DST_PLIST" >/dev/null 2>&1 || launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+}
+
+sync_watchdog_to_gateway_state() {
+  local state_rc
+  if gateway_running_state; then
+    state_rc=0
+  else
+    state_rc=$?
+  fi
+  case "$state_rc" in
+    0)
+      start_watchdog_job
+      ;;
+    *)
+      # If current gateway state cannot be determined during install, keep monitor idle.
+      stop_watchdog_job
+      ;;
+  esac
+}
+
 if [[ ! -f "$SRC_PLIST" ]]; then
   echo "template not found: $SRC_PLIST" >&2
   exit 1
@@ -104,7 +157,7 @@ RC_TMP=""
 HOOK_PRESENT=0
 HOOK_SHOULD_WRITE=1
 
-if grep -qF "$START_MARKER" "$RC_FILE"; then
+if [[ -f "$RC_FILE" ]] && grep -qF "$START_MARKER" "$RC_FILE"; then
   HOOK_PRESENT=1
   if [[ $FORCE -eq 0 ]]; then
     HOOK_SHOULD_WRITE=0
@@ -140,24 +193,76 @@ if [[ $HOOK_SHOULD_WRITE -eq 1 ]]; then
   cat >> "$RC_TMP" <<'EOF'
 
 # >>> fix-my-claw openclaw hook >>>
-# Auto-manage watchdog based on gateway lifecycle.
-openclaw() {
-  command openclaw "$@"
-  local rc=$?
+# Auto-manage watchdog based on actual gateway state after lifecycle commands.
+fix_my_claw_gateway_running_state() {
+  local status_json compact_json
+  if ! command -v openclaw >/dev/null 2>&1; then
+    return 2
+  fi
+  if ! status_json="$(command openclaw gateway status --json 2>/dev/null)"; then
+    return 2
+  fi
+  compact_json="$(printf '%s' "$status_json" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$compact_json" in
+    *'"running":true'*|*'"running":"true"'*|*'"status":"running"'*|*'"state":"running"'*|*'"active":true'*|*'"active":"true"'*|*'"gatewayrunning":true'*|*'"gatewayrunning":"true"'*)
+      return 0
+      ;;
+    *'"running":false'*|*'"running":"false"'*|*'"status":"stopped"'*|*'"state":"stopped"'*|*'"active":false'*|*'"active":"false"'*|*'"gatewayrunning":false'*|*'"gatewayrunning":"false"'*)
+      return 1
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+fix_my_claw_start_watchdog() {
   local domain="gui/$(id -u)"
   local label="com.fix-my-claw.monitor"
   local plist="$HOME/Library/LaunchAgents/com.fix-my-claw.monitor.plist"
 
+  if ! launchctl print "$domain/$label" >/dev/null 2>&1; then
+    launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1 || true
+  fi
+  launchctl enable "$domain/$label" >/dev/null 2>&1 || true
+  launchctl kickstart -k "$domain/$label" >/dev/null 2>&1 || true
+}
+
+fix_my_claw_stop_watchdog() {
+  local domain="gui/$(id -u)"
+  local label="com.fix-my-claw.monitor"
+  local plist="$HOME/Library/LaunchAgents/com.fix-my-claw.monitor.plist"
+
+  launchctl disable "$domain/$label" >/dev/null 2>&1 || true
+  launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+}
+
+fix_my_claw_sync_watchdog() {
+  local state_rc
+  if fix_my_claw_gateway_running_state; then
+    state_rc=0
+  else
+    state_rc=$?
+  fi
+  case "$state_rc" in
+    0)
+      fix_my_claw_start_watchdog
+      ;;
+    1)
+      fix_my_claw_stop_watchdog
+      ;;
+    *)
+      ;;
+  esac
+}
+
+openclaw() {
+  command openclaw "$@"
+  local rc=$?
+
   if [ "$rc" -eq 0 ] && [ "${1:-}" = "gateway" ]; then
-    if [ "${2:-}" = "start" ] || [ "${2:-}" = "restart" ]; then
-      if ! launchctl print "$domain/$label" >/dev/null 2>&1; then
-        launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1 || true
-      fi
-      launchctl enable "$domain/$label" >/dev/null 2>&1 || true
-      launchctl kickstart -k "$domain/$label" >/dev/null 2>&1 || true
-    elif [ "${2:-}" = "stop" ]; then
-      launchctl disable "$domain/$label" >/dev/null 2>&1 || true
-      launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+    if [ "${2:-}" = "start" ] || [ "${2:-}" = "restart" ] || [ "${2:-}" = "stop" ]; then
+      fix_my_claw_sync_watchdog
     fi
   fi
   return "$rc"
@@ -170,9 +275,8 @@ if [[ -n "$RC_TMP" ]]; then
   mv "$RC_TMP" "$RC_FILE"
 fi
 
-# Keep monitor idle right after installation; hook will start it on gateway start/restart.
-launchctl disable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-launchctl bootout "$DOMAIN" "$DST_PLIST" >/dev/null 2>&1 || launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+# Sync monitor state to the current gateway state right after installation.
+sync_watchdog_to_gateway_state
 
 cat <<EOF
 Installed launchd template: $DST_PLIST
@@ -184,8 +288,8 @@ Apply now:
   source "$RC_FILE"
 
 Behavior:
-  - openclaw gateway start/restart -> start watchdog
-  - openclaw gateway stop          -> stop watchdog
+  - if gateway is already running now -> start watchdog immediately
+  - openclaw gateway start/restart/stop -> re-sync watchdog to actual gateway state
 
 Check status:
   launchctl print "$DOMAIN/$LABEL"

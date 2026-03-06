@@ -1,13 +1,102 @@
 from __future__ import annotations
 
+import argparse
+import io
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
+from fix_my_claw import cli
 from fix_my_claw import core
+
+
+def _make_cmd_result(
+    argv: list[str] | None = None,
+    *,
+    exit_code: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+) -> core.CmdResult:
+    return core.CmdResult(
+        argv=argv or ["openclaw"],
+        cwd=None,
+        exit_code=exit_code,
+        duration_ms=1,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _make_probe(
+    name: str,
+    *,
+    exit_code: int = 0,
+    stdout: str = "{}",
+    stderr: str = "",
+    json_data: dict | list | None = None,
+) -> core.Probe:
+    return core.Probe(
+        name=name,
+        cmd=_make_cmd_result(
+            argv=["openclaw", "gateway", name, "--json"],
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+        ),
+        json_data={} if json_data is None and exit_code == 0 else json_data,
+    )
+
+
+def _make_health_evaluation(
+    *,
+    effective_healthy: bool,
+    probe_healthy: bool = True,
+    anomaly_guard: dict | None = None,
+    reason: str | None = None,
+    health_probe: core.Probe | None = None,
+    status_probe: core.Probe | None = None,
+    logs_probe: core.CmdResult | None = None,
+) -> core.HealthEvaluation:
+    if health_probe is None:
+        health_probe = _make_probe("health", exit_code=0 if probe_healthy else 1, stdout="{}" if probe_healthy else "")
+    if status_probe is None:
+        status_probe = _make_probe("status")
+    if logs_probe is None:
+        logs_probe = _make_cmd_result(
+            argv=["openclaw", "logs", "--tail", "200"],
+            exit_code=0,
+            stdout="logs",
+        )
+    return core.HealthEvaluation(
+        health_probe=health_probe,
+        status_probe=status_probe,
+        logs_probe=logs_probe,
+        anomaly_guard=anomaly_guard,
+        probe_healthy=probe_healthy,
+        effective_healthy=effective_healthy,
+        reason=reason,
+    )
+
+
+def _make_official_steps_result(
+    *,
+    effective_healthy: bool,
+    break_reason: str | None = None,
+    anomaly_guard: dict | None = None,
+) -> tuple[list[dict], core.HealthEvaluation, str]:
+    return (
+        [],
+        _make_health_evaluation(
+            effective_healthy=effective_healthy,
+            anomaly_guard=anomaly_guard,
+            reason="anomaly_guard" if anomaly_guard and anomaly_guard.get("triggered") else None,
+        ),
+        break_reason or ("healthy" if effective_healthy else "steps_exhausted"),
+    )
 
 
 class TestAnomalyGuardConfigCompat(unittest.TestCase):
@@ -34,8 +123,47 @@ max_repeat_same_signature = 9
             )
             cfg = core.load_config(str(cfg_path))
             self.assertTrue(cfg.anomaly_guard.enabled)
+            self.assertEqual(cfg.anomaly_guard.min_cycle_repeated_turns, 7)
             self.assertEqual(cfg.anomaly_guard.min_ping_pong_turns, 7)
             self.assertEqual(cfg.anomaly_guard.max_repeat_same_signature, 9)
+
+    def test_new_cycle_config_keys_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.toml"
+            cfg_path.write_text(
+                """
+[anomaly_guard]
+enabled = true
+min_cycle_repeated_turns = 5
+max_cycle_period = 6
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = core.load_config(str(cfg_path))
+            self.assertTrue(cfg.anomaly_guard.enabled)
+            self.assertEqual(cfg.anomaly_guard.min_cycle_repeated_turns, 5)
+            self.assertEqual(cfg.anomaly_guard.min_ping_pong_turns, 5)
+            self.assertEqual(cfg.anomaly_guard.max_cycle_period, 6)
+
+    def test_new_stagnation_config_keys_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.toml"
+            cfg_path.write_text(
+                """
+[anomaly_guard]
+enabled = true
+stagnation_enabled = true
+stagnation_min_events = 7
+stagnation_min_roles = 3
+stagnation_max_novel_cluster_ratio = 0.4
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = core.load_config(str(cfg_path))
+            self.assertTrue(cfg.anomaly_guard.stagnation_enabled)
+            self.assertEqual(cfg.anomaly_guard.stagnation_min_events, 7)
+            self.assertEqual(cfg.anomaly_guard.stagnation_min_roles, 3)
+            self.assertAlmostEqual(cfg.anomaly_guard.stagnation_max_novel_cluster_ratio, 0.4)
 
     def test_parse_repair_filters_empty_official_steps(self) -> None:
         repair = core._parse_repair(
@@ -131,15 +259,15 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             anomaly_guard=core.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
-                min_ping_pong_turns=2,
+                min_cycle_repeated_turns=2,
             )
         )
         log_text = "\n".join(
             [
-                "orchestrator: user says stop now",
-                "builder: received stop, repeating status",
-                "orchestrator: stop immediately, loop detected",
-                "builder: force stop command sent",
+                "orchestrator: stop now, repeating dispatch plan",
+                "builder: stop now, repeating implementation status",
+                "orchestrator: stop now, repeating dispatch plan",
+                "builder: stop now, repeating implementation status",
             ]
         )
         log_result = core.CmdResult(
@@ -150,17 +278,19 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        with patch.object(core, "probe_logs", return_value=log_result):
-            info = core._analyze_anomaly_guard(cfg)
-            self.assertTrue(info["triggered"])
-            self.assertTrue(info["signals"]["ping_pong_trigger"])
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["ping_pong_trigger"])
+        self.assertTrue(info["signals"]["cycle_trigger"])
+        self.assertEqual(info["metrics"]["cycle_event"]["period"], 2)
+        self.assertEqual(info["metrics"]["cycle_repeated_turns"], 2)
 
     def test_detector_triggers_on_ping_pong_without_stop_signal(self) -> None:
         cfg = core.AppConfig(
             anomaly_guard=core.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
-                min_ping_pong_turns=2,
+                min_cycle_repeated_turns=2,
             )
         )
         log_text = "\n".join(
@@ -179,17 +309,17 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        with patch.object(core, "probe_logs", return_value=log_result):
-            info = core._analyze_anomaly_guard(cfg)
-            self.assertTrue(info["triggered"])
-            self.assertTrue(info["signals"]["ping_pong_trigger"])
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["ping_pong_trigger"])
+        self.assertTrue(info["signals"]["cycle_trigger"])
 
-    def test_detector_triggers_on_repeated_signature_without_stop_signal(self) -> None:
+    def test_detector_does_not_treat_progress_sequence_as_repeat(self) -> None:
         cfg = core.AppConfig(
             anomaly_guard=core.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=3,
-                min_ping_pong_turns=99,
+                min_cycle_repeated_turns=99,
             )
         )
         log_text = "\n".join(
@@ -207,17 +337,18 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        with patch.object(core, "probe_logs", return_value=log_result):
-            info = core._analyze_anomaly_guard(cfg)
-            self.assertTrue(info["triggered"])
-            self.assertTrue(info["signals"]["repeat_trigger"])
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertFalse(info["triggered"])
+        self.assertFalse(info["signals"]["repeat_trigger"])
+        self.assertFalse(info["signals"]["similar_repeat_trigger"])
+        self.assertFalse(info["signals"]["cycle_trigger"])
 
     def test_detector_triggers_on_similarity_repeat_for_single_agent(self) -> None:
         cfg = core.AppConfig(
             anomaly_guard=core.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
-                min_ping_pong_turns=99,
+                min_cycle_repeated_turns=99,
                 auto_dispatch_check=False,
                 keywords_repeat=[],
                 similarity_enabled=True,
@@ -241,19 +372,246 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        with patch.object(core, "probe_logs", return_value=log_result):
-            info = core._analyze_anomaly_guard(cfg)
-            self.assertTrue(info["triggered"])
-            self.assertTrue(info["signals"]["similar_repeat_trigger"])
-            self.assertEqual(info["metrics"]["max_similar_repeats"], 3)
-            self.assertEqual(info["metrics"]["top_similar_group"]["role"], "builder")
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["similar_repeat_trigger"])
+        self.assertEqual(info["metrics"]["max_similar_repeat_run_repetitions"], 3)
+        self.assertEqual(info["metrics"]["max_similar_repeats"], 3)
+        self.assertEqual(info["metrics"]["top_similar_group"]["role"], "builder")
+
+    def test_detector_triggers_on_architect_research_cycle(self) -> None:
+        cfg = core.AppConfig(
+            anomaly_guard=core.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=2,
+                auto_dispatch_check=False,
+                keywords_repeat=[],
+            )
+        )
+        log_text = "\n".join(
+            [
+                "architect: refine the API migration plan",
+                "research: collect API migration constraints",
+                "architect: refine the API migration plan",
+                "research: collect API migration constraints",
+            ]
+        )
+        log_result = core.CmdResult(
+            argv=["openclaw", "logs", "--tail", "200"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=log_text,
+            stderr="",
+        )
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["cycle_trigger"])
+        self.assertTrue(info["signals"]["ping_pong_trigger"])
+        self.assertEqual(info["metrics"]["cycle_event"]["period"], 2)
+        self.assertEqual(info["metrics"]["cycle_event"]["involved_roles"], ["architect", "research"])
+
+    def test_detector_triggers_on_three_role_cycle(self) -> None:
+        cfg = core.AppConfig(
+            anomaly_guard=core.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=3,
+                auto_dispatch_check=False,
+                keywords_repeat=[],
+            )
+        )
+        log_text = "\n".join(
+            [
+                "orchestrator: coordinate deploy checklist",
+                "builder: update deploy checklist implementation",
+                "architect: review deploy checklist constraints",
+                "orchestrator: coordinate deploy checklist",
+                "builder: update deploy checklist implementation",
+                "architect: review deploy checklist constraints",
+            ]
+        )
+        log_result = core.CmdResult(
+            argv=["openclaw", "logs", "--tail", "200"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=log_text,
+            stderr="",
+        )
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["cycle_trigger"])
+        self.assertFalse(info["signals"]["ping_pong_trigger"])
+        self.assertEqual(info["metrics"]["cycle_event"]["period"], 3)
+        self.assertEqual(
+            info["metrics"]["cycle_event"]["involved_roles"],
+            ["orchestrator", "builder", "architect"],
+        )
+
+    def test_detector_output_exposes_structured_detector_findings(self) -> None:
+        cfg = core.AppConfig(
+            anomaly_guard=core.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=3,
+                auto_dispatch_check=False,
+                keywords_repeat=[],
+            )
+        )
+        log_text = "\n".join(
+            [
+                "orchestrator: coordinate deploy checklist",
+                "builder: update deploy checklist implementation",
+                "architect: review deploy checklist constraints",
+                "orchestrator: coordinate deploy checklist",
+                "builder: update deploy checklist implementation",
+                "architect: review deploy checklist constraints",
+            ]
+        )
+        log_result = core.CmdResult(
+            argv=["openclaw", "logs", "--tail", "200"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=log_text,
+            stderr="",
+        )
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        cycle_detector = next(detector for detector in info["detectors"] if detector["detector"] == "cycle")
+        self.assertTrue(cycle_detector["triggered"])
+        self.assertEqual(cycle_detector["period"], 3)
+        self.assertEqual(cycle_detector["repetitions"], 2)
+        self.assertEqual(cycle_detector["involved_roles"], ["orchestrator", "builder", "architect"])
+        self.assertEqual(len(cycle_detector["evidence"]), 6)
+
+    def test_detector_triggers_on_four_role_cycle_with_noise(self) -> None:
+        cfg = core.AppConfig(
+            anomaly_guard=core.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=4,
+                auto_dispatch_check=False,
+                keywords_repeat=[],
+            )
+        )
+        log_text = "\n".join(
+            [
+                "user: please keep going",
+                "orchestrator: coordinate release checklist",
+                "[system] heart beat ok",
+                "builder: implement release checklist changes",
+                "architect: review release checklist design",
+                "research: verify release checklist assumptions",
+                "user: any blockers?",
+                "orchestrator: coordinate release checklist",
+                "builder: implement release checklist changes",
+                "architect: review release checklist design",
+                "research: verify release checklist assumptions",
+            ]
+        )
+        log_result = core.CmdResult(
+            argv=["openclaw", "logs", "--tail", "200"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=log_text,
+            stderr="",
+        )
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["cycle_trigger"])
+        self.assertEqual(info["metrics"]["events_analyzed"], 8)
+        self.assertEqual(info["metrics"]["cycle_event"]["period"], 4)
+        self.assertEqual(
+            info["metrics"]["cycle_event"]["involved_roles"],
+            ["orchestrator", "builder", "architect", "research"],
+        )
+
+    def test_detector_triggers_on_low_novelty_stagnation_without_cycle(self) -> None:
+        cfg = core.AppConfig(
+            anomaly_guard=core.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=99,
+                auto_dispatch_check=False,
+                keywords_repeat=[],
+                stagnation_enabled=True,
+                stagnation_min_events=6,
+                stagnation_min_roles=2,
+                stagnation_max_novel_cluster_ratio=0.34,
+            )
+        )
+        log_text = "\n".join(
+            [
+                "orchestrator: schema mismatch remains unresolved",
+                "builder: schema mismatch remains unresolved",
+                "architect: schema mismatch remains unresolved",
+                "research: schema mismatch remains unresolved",
+                "orchestrator: schema mismatch remains unresolved",
+                "builder: schema mismatch remains unresolved",
+            ]
+        )
+        log_result = core.CmdResult(
+            argv=["openclaw", "logs", "--tail", "200"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=log_text,
+            stderr="",
+        )
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["stagnation_trigger"])
+        self.assertFalse(info["signals"]["cycle_trigger"])
+        self.assertIsNotNone(info["metrics"]["stagnation_event"])
+        self.assertEqual(info["metrics"]["stagnation_event"]["event_count"], 6)
+        self.assertEqual(info["metrics"]["stagnation_event"]["distinct_cluster_count"], 1)
+        self.assertAlmostEqual(info["metrics"]["stagnation_event"]["novel_cluster_ratio"], 1 / 6, places=4)
+
+    def test_stagnation_detector_does_not_trigger_on_diverse_recent_window(self) -> None:
+        cfg = core.AppConfig(
+            anomaly_guard=core.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=99,
+                auto_dispatch_check=False,
+                keywords_repeat=[],
+                stagnation_enabled=True,
+                stagnation_min_events=6,
+                stagnation_min_roles=2,
+                stagnation_max_novel_cluster_ratio=0.34,
+            )
+        )
+        log_text = "\n".join(
+            [
+                "orchestrator: draft service migration plan",
+                "builder: implement service migration changes",
+                "architect: review service migration risks",
+                "research: verify service migration assumptions",
+                "orchestrator: prepare rollout checklist",
+                "builder: update rollback procedure",
+            ]
+        )
+        log_result = core.CmdResult(
+            argv=["openclaw", "logs", "--tail", "200"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=log_text,
+            stderr="",
+        )
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertFalse(info["signals"]["stagnation_trigger"])
+        self.assertIsNone(info["metrics"]["stagnation_event"])
 
     def test_similarity_repeat_does_not_mix_different_roles(self) -> None:
         cfg = core.AppConfig(
             anomaly_guard=core.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
-                min_ping_pong_turns=99,
+                min_cycle_repeated_turns=99,
                 auto_dispatch_check=False,
                 keywords_repeat=[],
                 similarity_enabled=True,
@@ -278,17 +636,16 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        with patch.object(core, "probe_logs", return_value=log_result):
-            info = core._analyze_anomaly_guard(cfg)
-            self.assertFalse(info["triggered"])
-            self.assertFalse(info["signals"]["similar_repeat_trigger"])
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertFalse(info["triggered"])
+        self.assertFalse(info["signals"]["similar_repeat_trigger"])
 
     def test_auto_dispatch_requires_unexpected_post_handoff_speaker_streak(self) -> None:
         cfg = core.AppConfig(
             anomaly_guard=core.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
-                min_ping_pong_turns=99,
+                min_cycle_repeated_turns=99,
                 keywords_repeat=[],
                 similarity_enabled=False,
                 min_post_dispatch_unexpected_turns=2,
@@ -309,22 +666,21 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        with patch.object(core, "probe_logs", return_value=log_result):
-            info = core._analyze_anomaly_guard(cfg)
-            self.assertTrue(info["triggered"])
-            self.assertTrue(info["signals"]["auto_dispatch_trigger"])
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["initiator_role"], "orchestrator")
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["target_role"], "builder")
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["unexpected_role"], "orchestrator")
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["dispatch_line_index"], 0)
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["unexpected_line_index"], 2)
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["auto_dispatch_trigger"])
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["initiator_role"], "orchestrator")
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["target_role"], "builder")
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["unexpected_role"], "orchestrator")
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["dispatch_line_index"], 0)
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["unexpected_line_index"], 2)
 
     def test_auto_dispatch_does_not_trigger_on_role_mentions_without_streak(self) -> None:
         cfg = core.AppConfig(
             anomaly_guard=core.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
-                min_ping_pong_turns=99,
+                min_cycle_repeated_turns=99,
                 keywords_repeat=[],
                 similarity_enabled=False,
                 min_post_dispatch_unexpected_turns=2,
@@ -345,17 +701,16 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        with patch.object(core, "probe_logs", return_value=log_result):
-            info = core._analyze_anomaly_guard(cfg)
-            self.assertFalse(info["triggered"])
-            self.assertFalse(info["signals"]["auto_dispatch_trigger"])
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertFalse(info["triggered"])
+        self.assertFalse(info["signals"]["auto_dispatch_trigger"])
 
     def test_auto_dispatch_supports_research_as_handoff_target(self) -> None:
         cfg = core.AppConfig(
             anomaly_guard=core.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
-                min_ping_pong_turns=99,
+                min_cycle_repeated_turns=99,
                 keywords_repeat=[],
                 similarity_enabled=False,
                 min_post_dispatch_unexpected_turns=2,
@@ -376,18 +731,17 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        with patch.object(core, "probe_logs", return_value=log_result):
-            info = core._analyze_anomaly_guard(cfg)
-            self.assertTrue(info["triggered"])
-            self.assertTrue(info["signals"]["auto_dispatch_trigger"])
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["target_role"], "research")
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["auto_dispatch_trigger"])
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["target_role"], "research")
 
     def test_auto_dispatch_supports_timestamped_log_prefixes(self) -> None:
         cfg = core.AppConfig(
             anomaly_guard=core.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
-                min_ping_pong_turns=99,
+                min_cycle_repeated_turns=99,
                 keywords_repeat=[],
                 similarity_enabled=False,
                 min_post_dispatch_unexpected_turns=2,
@@ -408,14 +762,17 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        with patch.object(core, "probe_logs", return_value=log_result):
-            info = core._analyze_anomaly_guard(cfg)
-            self.assertTrue(info["triggered"])
-            self.assertTrue(info["signals"]["auto_dispatch_trigger"])
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["initiator_role"], "orchestrator")
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["target_role"], "builder")
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["unexpected_role"], "orchestrator")
-            self.assertEqual(info["metrics"]["auto_dispatch_event"]["unexpected_line_index"], 2)
+        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["auto_dispatch_trigger"])
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["initiator_role"], "orchestrator")
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["target_role"], "builder")
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["unexpected_role"], "orchestrator")
+        self.assertEqual(info["metrics"]["auto_dispatch_event"]["unexpected_line_index"], 2)
+        handoff_detector = next(detector for detector in info["detectors"] if detector["detector"] == "handoff_violation")
+        self.assertTrue(handoff_detector["triggered"])
+        self.assertEqual(handoff_detector["involved_roles"], ["orchestrator", "builder"])
+        self.assertEqual(len(handoff_detector["evidence"]), 2)
 
 
 class TestNotifyDecision(unittest.TestCase):
@@ -625,9 +982,14 @@ class TestRepairFlow(unittest.TestCase):
         with patch.object(core, "_collect_context", return_value={}), patch.object(
             core, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core, "_run_official_steps", return_value=[]
+            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core, "_is_effectively_healthy", side_effect=[(False, None), (False, None), (True, None)]
+            core,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=True),
+            ],
         ), patch.object(
             core, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
         ), patch.object(
@@ -642,15 +1004,45 @@ class TestRepairFlow(unittest.TestCase):
             backup_mock.assert_called_once()
             ai_mock.assert_called_once()
 
+    def test_attempt_repair_exposes_typed_stage_pipeline(self) -> None:
+        cfg = self._cfg()
+        store = core.StateStore(Path(tempfile.mkdtemp()))
+        with patch.object(core, "_collect_context", return_value={"healthy": True}), patch.object(
+            core, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
+        ), patch.object(
+            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
+        ), patch.object(
+            core,
+            "_evaluate_health",
+            return_value=_make_health_evaluation(effective_healthy=False),
+        ), patch.object(
+            core, "_notify_send", return_value={"sent": True}
+        ):
+            result = core.attempt_repair(cfg, store, force=True, reason="anomaly_guard")
+            self.assertIsNotNone(result.outcome)
+            outcome = result.outcome
+            if outcome is None:
+                self.fail("expected typed repair outcome")
+            self.assertEqual([stage.name for stage in outcome.stages], ["terminate", "new", "official"])
+            self.assertIsInstance(outcome.stages[0].payload, core.SessionStageData)
+            self.assertIsInstance(outcome.stages[2].payload, core.OfficialRepairStageData)
+            self.assertEqual(result.details.get("official_break_reason"), "healthy")
+            self.assertEqual(result.details.get("reason"), "anomaly_guard")
+
     def test_timeout_never_runs_ai(self) -> None:
         cfg = self._cfg()
         store = core.StateStore(Path(tempfile.mkdtemp()))
         with patch.object(core, "_collect_context", return_value={}), patch.object(
             core, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core, "_run_official_steps", return_value=[]
+            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core, "_is_effectively_healthy", side_effect=[(False, None), (False, None), (False, None)]
+            core,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=False),
+            ],
         ), patch.object(
             core, "_ask_user_enable_ai", return_value={"asked": True, "decision": "timeout"}
         ), patch.object(
@@ -672,9 +1064,14 @@ class TestRepairFlow(unittest.TestCase):
         with patch.object(core, "_collect_context", return_value={}), patch.object(
             core, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core, "_run_official_steps", return_value=[]
+            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core, "_is_effectively_healthy", side_effect=[(False, None), (False, None), (False, None)]
+            core,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=False),
+            ],
         ), patch.object(
             core, "_ask_user_enable_ai"
         ) as ask_mock, patch.object(
@@ -698,9 +1095,14 @@ class TestRepairFlow(unittest.TestCase):
         with patch.object(core, "_collect_context", return_value={}), patch.object(
             core, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core, "_run_official_steps", return_value=[]
+            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core, "_is_effectively_healthy", side_effect=[(False, None), (False, None), (False, None)]
+            core,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=False),
+            ],
         ), patch.object(
             core, "_ask_user_enable_ai"
         ) as ask_mock, patch.object(
@@ -715,27 +1117,26 @@ class TestRepairFlow(unittest.TestCase):
             ai_mock.assert_not_called()
 
     def test_collect_context_keeps_stage_snapshots_immutable(self) -> None:
-        cfg = core.AppConfig()
         attempt_dir = Path(tempfile.mkdtemp())
-        health = core.Probe(
-            name="health",
-            cmd=core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="h", stderr=""),
-            json_data={},
+        evaluation = _make_health_evaluation(
+            effective_healthy=True,
+            health_probe=core.Probe(
+                name="health",
+                cmd=core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="h", stderr=""),
+                json_data={},
+            ),
+            status_probe=core.Probe(
+                name="status",
+                cmd=core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="s", stderr=""),
+                json_data={},
+            ),
+            logs_probe=core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="l", stderr=""),
         )
-        status = core.Probe(
-            name="status",
-            cmd=core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="s", stderr=""),
-            json_data={},
-        )
-        logs = core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="l", stderr="")
-        with patch.object(core, "probe_health", return_value=health), patch.object(
-            core, "probe_status", return_value=status
-        ), patch.object(core, "probe_logs", return_value=logs):
-            before = core._collect_context(cfg, attempt_dir, stage_name="before")
-            after = core._collect_context(cfg, attempt_dir, stage_name="after_official")
-            self.assertNotEqual(before["logs"]["stdout_path"], after["logs"]["stdout_path"])
-            self.assertTrue(Path(before["logs"]["stdout_path"]).exists())
-            self.assertTrue(Path(after["logs"]["stdout_path"]).exists())
+        before = core._collect_context(evaluation, attempt_dir, stage_name="before")
+        after = core._collect_context(evaluation, attempt_dir, stage_name="after_official")
+        self.assertNotEqual(before["logs"]["stdout_path"], after["logs"]["stdout_path"])
+        self.assertTrue(Path(before["logs"]["stdout_path"]).exists())
+        self.assertTrue(Path(after["logs"]["stdout_path"]).exists())
 
     def test_attempt_dir_is_unique_even_with_same_timestamp(self) -> None:
         cfg = core.AppConfig(
@@ -760,7 +1161,7 @@ class TestRepairFlow(unittest.TestCase):
             )
         )
         store = core.StateStore(state_dir)
-        with patch.object(core, "_is_effectively_healthy", return_value=(False, None)), patch.object(
+        with patch.object(core, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)), patch.object(
             core, "_attempt_dir", side_effect=RuntimeError("boom")
         ):
             with self.assertRaisesRegex(RuntimeError, "boom"):
@@ -771,10 +1172,14 @@ class TestRepairFlow(unittest.TestCase):
         cfg = core.AppConfig(repair=core.RepairConfig(official_steps=[[], ["openclaw", "gateway", "restart"]]))
         attempt_dir = Path(tempfile.mkdtemp())
         with patch.object(core, "run_cmd", return_value=self._cmd_ok()) as run_cmd_mock, patch.object(
+            core, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)
+        ), patch.object(
             core.time, "sleep", return_value=None
         ):
-            out = core._run_official_steps(cfg, attempt_dir, break_on_healthy=False)
+            out, final_evaluation, break_reason = core._run_official_steps(cfg, attempt_dir, break_on_healthy=False)
             self.assertEqual(len(out), 1)
+            self.assertFalse(final_evaluation.effective_healthy)
+            self.assertEqual(break_reason, "steps_exhausted")
             run_cmd_mock.assert_called_once()
 
     def test_attempt_repair_does_not_skip_anomaly_only_unhealthy_state(self) -> None:
@@ -784,12 +1189,25 @@ class TestRepairFlow(unittest.TestCase):
             ai=core.AiConfig(enabled=False, allow_code_changes=False),
         )
         store = core.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(core, "_is_effectively_healthy", side_effect=[(False, {"triggered": True}), (True, None)]), patch.object(
+        with patch.object(
+            core,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(
+                    effective_healthy=False,
+                    probe_healthy=True,
+                    anomaly_guard={"triggered": True},
+                    reason="anomaly_guard",
+                ),
+            ],
+        ), patch.object(
             core, "_collect_context", return_value={}
         ), patch.object(
             core, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core, "_run_official_steps", return_value=[]
+            core,
+            "_run_official_steps",
+            return_value=_make_official_steps_result(effective_healthy=True, break_reason="healthy"),
         ) as official_mock, patch.object(
             core, "_notify_send", return_value={"sent": True}
         ):
@@ -851,9 +1269,14 @@ class TestRepairFlow(unittest.TestCase):
         with patch.object(core, "_collect_context", return_value={}), patch.object(
             core, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
         ), patch.object(
-            core, "_run_official_steps", return_value=[]
+            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core, "_is_effectively_healthy", side_effect=[(False, None), (False, None), (False, None)]
+            core,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=False),
+            ],
         ), patch.object(
             core, "_notify_send", return_value={"sent": True}
         ), patch.object(
@@ -864,7 +1287,7 @@ class TestRepairFlow(unittest.TestCase):
 
 
 class TestHealthDetailsAndLogging(unittest.TestCase):
-    def test_is_effectively_healthy_returns_probe_details_when_probes_fail(self) -> None:
+    def test_evaluate_health_returns_probe_failure_reason(self) -> None:
         cfg = core.AppConfig()
         failed_probe = core.Probe(
             name="health",
@@ -893,12 +1316,12 @@ class TestHealthDetailsAndLogging(unittest.TestCase):
         with patch.object(core, "probe_health", return_value=failed_probe), patch.object(
             core, "probe_status", return_value=ok_probe
         ):
-            healthy, info = core._is_effectively_healthy(cfg)
-            self.assertFalse(healthy)
-            self.assertIsNotNone(info)
-            self.assertFalse(info["probe_ok"])
-            self.assertEqual(info["health"]["exit_code"], 1)
-            self.assertEqual(info["status"]["exit_code"], 0)
+            evaluation = core._evaluate_health(cfg)
+            self.assertFalse(evaluation.effective_healthy)
+            self.assertFalse(evaluation.probe_healthy)
+            self.assertEqual(evaluation.reason, "probe_failed")
+            self.assertEqual(evaluation.health["exit_code"], 1)
+            self.assertEqual(evaluation.status["exit_code"], 0)
 
     def test_setup_logging_creates_private_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -940,6 +1363,130 @@ class TestFileLockSafety(unittest.TestCase):
             with patch.object(core.os, "kill", side_effect=PermissionError):
                 self.assertFalse(lock._try_break_stale_lock())
             self.assertTrue(lock_path.exists())
+
+    def test_stale_lock_replacement_is_not_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            lock_path = Path(td) / "fix-my-claw.lock"
+            lock_path.touch()
+            stale_ts = os.path.getmtime(lock_path) - (core.LOCK_INITIALIZING_GRACE_SECONDS + 1)
+            os.utime(lock_path, (stale_ts, stale_ts))
+            lock = core.FileLock(lock_path)
+            original_unlink_if_same_lock = lock._unlink_if_same_lock
+
+            def _replace_lock(expected_signature: tuple[int, int] | None) -> bool:
+                lock_path.unlink()
+                lock_path.write_text("fresh-owner", encoding="utf-8")
+                return original_unlink_if_same_lock(expected_signature)
+
+            with patch.object(lock, "_unlink_if_same_lock", side_effect=_replace_lock):
+                self.assertFalse(lock._try_break_stale_lock())
+            self.assertTrue(lock_path.exists())
+            self.assertEqual(lock_path.read_text(encoding="utf-8"), "fresh-owner")
+
+
+class TestCliCommands(unittest.TestCase):
+    def test_with_single_instance_returns_2_when_lock_is_held(self) -> None:
+        cfg = core.AppConfig()
+        lock = Mock()
+        lock.acquire.return_value = False
+        stderr = io.StringIO()
+
+        with patch.object(cli, "FileLock", return_value=lock), patch("sys.stderr", new=stderr):
+            code = cli._with_single_instance(cfg, lambda: 0)
+
+        self.assertEqual(code, 2)
+        self.assertIn("another fix-my-claw instance is running", stderr.getvalue())
+        lock.release.assert_not_called()
+
+    def test_cmd_check_returns_failure_and_json_for_unhealthy_result(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = core.AppConfig(monitor=core.MonitorConfig(state_dir=Path(td)))
+            args = argparse.Namespace(config="ignored.toml", json=True)
+            evaluation = _make_health_evaluation(effective_healthy=False)
+            stdout = io.StringIO()
+
+            with patch.object(cli, "_load_or_init_config", return_value=cfg), patch.object(
+                cli, "setup_logging"
+            ), patch.object(
+                cli, "run_check", return_value=evaluation
+            ), patch("sys.stdout", new=stdout):
+                code = cli.cmd_check(args)
+
+        self.assertEqual(code, 1)
+        payload = json.loads(stdout.getvalue())
+        self.assertFalse(payload["healthy"])
+        self.assertEqual(payload["reason"], evaluation.reason)
+
+    def test_cmd_repair_uses_force_flag_and_emits_json(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = core.AppConfig(monitor=core.MonitorConfig(state_dir=Path(td)))
+            args = argparse.Namespace(config="ignored.toml", force=True, json=True)
+            result = Mock()
+            result.fixed = True
+            result.to_json.return_value = {"fixed": True}
+            lock = Mock()
+            lock.acquire.return_value = True
+            stdout = io.StringIO()
+
+            with patch.object(cli, "_load_or_init_config", return_value=cfg), patch.object(
+                cli, "setup_logging"
+            ), patch.object(
+                cli, "FileLock", return_value=lock
+            ), patch.object(
+                cli, "attempt_repair", return_value=result
+            ) as attempt_repair_mock, patch("sys.stdout", new=stdout):
+                code = cli.cmd_repair(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue()), {"fixed": True})
+        self.assertEqual(attempt_repair_mock.call_args.args[0], cfg)
+        self.assertIsInstance(attempt_repair_mock.call_args.args[1], core.StateStore)
+        self.assertEqual(
+            attempt_repair_mock.call_args.kwargs,
+            {"force": True, "reason": None},
+        )
+        lock.release.assert_called_once()
+
+
+class TestMonitorLoop(unittest.TestCase):
+    def test_monitor_loop_attempts_repair_once_for_anomaly_guard(self) -> None:
+        class StopLoop(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg = core.AppConfig(
+                monitor=core.MonitorConfig(
+                    state_dir=Path(td),
+                    interval_seconds=1,
+                )
+            )
+            store = core.StateStore(Path(td))
+            evaluation = _make_health_evaluation(
+                effective_healthy=False,
+                anomaly_guard={"triggered": True, "signals": ["ping_pong"]},
+                reason="anomaly_guard",
+            )
+            repair_result = SimpleNamespace(
+                attempted=True,
+                fixed=False,
+                used_ai=False,
+                details={"attempt_dir": str(Path(td) / "attempt-1")},
+            )
+
+            with patch.object(core, "run_check", return_value=evaluation), patch.object(
+                core, "attempt_repair", return_value=repair_result
+            ) as attempt_repair_mock, patch.object(
+                core.time, "sleep", side_effect=StopLoop
+            ):
+                with self.assertRaises(StopLoop):
+                    core.monitor_loop(cfg, store)
+
+        attempt_repair_mock.assert_called_once_with(
+            cfg,
+            store,
+            force=False,
+            reason="anomaly_guard",
+        )
 
 
 if __name__ == "__main__":
