@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -44,6 +45,16 @@ def redact_text(text: str) -> str:
     for pat in _SECRET_PATTERNS:
         out = re.sub(pat, "sk-***", out)
     return out
+
+
+def _parse_json_maybe(stdout: str) -> dict | list | None:
+    s = stdout.strip()
+    if not s:
+        return None
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        return None
 
 
 class SecureRotatingFileHandler(RotatingFileHandler):

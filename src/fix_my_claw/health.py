@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 
 from .config import AppConfig
 from .runtime import CmdResult, run_cmd
-from .shared import truncate_for_log
+from .shared import _parse_json_maybe, truncate_for_log
 
 
 @dataclass(frozen=True)
@@ -73,17 +72,6 @@ class HealthEvaluation:
             out["anomaly_guard"] = self.anomaly_guard
             out["loop_guard"] = self.anomaly_guard
         return out
-
-
-def _parse_json_maybe(stdout: str) -> dict | list | None:
-    s = stdout.strip()
-    if not s:
-        return None
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        return None
-
 
 def probe_health(cfg: AppConfig, *, log_on_fail: bool = True) -> Probe:
     argv = [cfg.openclaw.command, *cfg.openclaw.health_args]

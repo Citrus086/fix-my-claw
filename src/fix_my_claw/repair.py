@@ -17,7 +17,7 @@ from .config import AppConfig
 from .health import HealthEvaluation, probe_health, probe_logs, probe_status
 from .notify import _ask_user_enable_ai, _notify_send
 from .runtime import CmdResult, run_cmd
-from .shared import ensure_dir, redact_text, truncate_for_log
+from .shared import _parse_json_maybe, ensure_dir, redact_text, truncate_for_log
 from .state import StateStore, _now_ts
 
 
@@ -36,17 +36,6 @@ def _dispatch(name: str, local: Any, *args: Any, **kwargs: Any) -> Any:
     if override is not None:
         return override(*args, **kwargs)
     return local(*args, **kwargs)
-
-
-def _parse_json_maybe(stdout: str) -> dict | list | None:
-    s = stdout.strip()
-    if not s:
-        return None
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        return None
-
 
 def _parse_agent_id_from_session_key(key: str) -> str | None:
     match = re.match(r"^agent:([^:]+):", key or "")

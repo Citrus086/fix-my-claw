@@ -9,7 +9,7 @@ from typing import Any
 
 from .config import AppConfig
 from .runtime import run_cmd
-from .shared import redact_text
+from .shared import _parse_json_maybe, redact_text
 
 
 def _core_override(name: str, local: Any) -> Any | None:
@@ -27,16 +27,6 @@ def _dispatch(name: str, local: Any, *args: Any, **kwargs: Any) -> Any:
     if override is not None:
         return override(*args, **kwargs)
     return local(*args, **kwargs)
-
-
-def _parse_json_maybe(stdout: str) -> dict | list | None:
-    s = stdout.strip()
-    if not s:
-        return None
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        return None
 
 
 def _write_attempt_file(dir_: Path, name: str, content: str) -> Path:
