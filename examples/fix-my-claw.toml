@@ -1,0 +1,100 @@
+[monitor]
+interval_seconds = 60
+probe_timeout_seconds = 15
+repair_cooldown_seconds = 300
+state_dir = "~/.fix-my-claw"
+log_file = "~/.fix-my-claw/fix-my-claw.log"
+log_level = "INFO"
+
+[openclaw]
+command = "openclaw"
+state_dir = "~/.openclaw"
+workspace_dir = "~/.openclaw/workspace"
+health_args = ["gateway", "health", "--json"]
+status_args = ["gateway", "status", "--json"]
+logs_args = ["logs", "--tail", "200"]
+
+[repair]
+enabled = true
+session_control_enabled = true
+session_active_minutes = 30
+session_agents = ["macs-orchestrator", "macs-builder", "macs-architect", "macs-research"]
+terminate_message = "/stop"
+new_message = "/new"
+session_command_timeout_seconds = 120
+session_stage_wait_seconds = 1
+# Default official steps:
+# 1) `openclaw doctor --repair` (fixes common config/workspace issues)
+# 2) `openclaw gateway restart` (restart supervised gateway service)
+official_steps = [
+  ["openclaw", "doctor", "--repair"],
+  ["openclaw", "gateway", "restart"],
+]
+step_timeout_seconds = 600
+post_step_wait_seconds = 2
+
+[notify]
+# Optional operator notification + interactive yes/no for enabling Codex stage.
+channel = "discord"
+account = "orchestrator"
+# Target format follows OpenClaw message CLI, e.g. "channel:<discord_channel_id>"
+target = "channel:1479011917367476347"
+silent = true
+send_timeout_seconds = 20
+read_timeout_seconds = 20
+ask_enable_ai = true
+ask_timeout_seconds = 300
+poll_interval_seconds = 5
+read_limit = 20
+# If empty, any human message in target channel can answer yes/no.
+# If target is channel:..., reply should mention notify account (e.g. "@fix-my-claw yes").
+# Only strict replies are accepted: 是/否/yes/no. Invalid replies are re-asked and capped at 3 attempts.
+operator_user_ids = []
+
+[anomaly_guard]
+# Detect "looks healthy but stuck in orchestrator/builder ping-pong" patterns from recent logs.
+enabled = true
+window_lines = 200
+probe_timeout_seconds = 15
+keywords_stop = ["stop", "halt", "abort", "cancel", "terminate", "停止", "立刻停止", "强制停止", "终止", "停止指令"]
+keywords_repeat = ["repeat", "repeating", "loop", "ping-pong", "重复", "死循环", "不断", "一直在重复", "重复汇报"]
+max_repeat_same_signature = 3
+min_ping_pong_turns = 4
+min_signature_chars = 16
+auto_dispatch_check = true
+dispatch_window_lines = 20
+keywords_dispatch = ["dispatch", "handoff", "delegate", "assign", "开始实施", "开始执行", "派给", "转交"]
+keywords_architect_active = ["architect", "still output", "continue output", "还在输出", "继续发内容", "连续输出"]
+similarity_enabled = true
+similarity_threshold = 0.82
+similarity_min_chars = 12
+max_similar_repeat = 4
+
+[ai]
+# Codex-assisted remediation is powerful and risky; enable only if you accept unattended execution.
+enabled = false
+provider = "codex"
+command = "codex"
+# Stage 1: allow ONLY workspace + openclaw state dir + fix-my-claw dir (workspace-write sandbox).
+args = [
+  "exec",
+  "-s", "workspace-write",
+  "-c", "approval_policy=\"never\"",
+  "--skip-git-repo-check",
+  "-C", "$workspace_dir",
+  "--add-dir", "$openclaw_state_dir",
+  "--add-dir", "$monitor_state_dir",
+]
+model = "gpt-5.2"
+timeout_seconds = 1800
+max_attempts_per_day = 2
+cooldown_seconds = 3600
+# Stage 2: only if you want to allow code/installation changes.
+allow_code_changes = false
+args_code = [
+  "exec",
+  "-s", "danger-full-access",
+  "-c", "approval_policy=\"never\"",
+  "--skip-git-repo-check",
+  "-C", "$workspace_dir",
+]
