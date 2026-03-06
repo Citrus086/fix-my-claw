@@ -10,5 +10,5 @@ Type=oneshot
 # User=openclaw
 
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/env fix-my-claw repair --config /etc/fix-my-claw/config.toml
-
+# Render @FIX_MY_CLAW_BIN@ and @CONFIG_PATH@ before installing.
+ExecStart=@FIX_MY_CLAW_BIN@ repair --config @CONFIG_PATH@

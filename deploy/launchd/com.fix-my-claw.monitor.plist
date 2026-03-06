@@ -7,9 +7,10 @@
 
     <key>ProgramArguments</key>
     <array>
-      <string>/bin/sh</string>
-      <string>-lc</string>
-      <string>fix-my-claw monitor --config "$HOME/.fix-my-claw/config.toml"</string>
+      <string>@FIX_MY_CLAW_BIN@</string>
+      <string>monitor</string>
+      <string>--config</string>
+      <string>@CONFIG_PATH@</string>
     </array>
 
     <key>EnvironmentVariables</key>

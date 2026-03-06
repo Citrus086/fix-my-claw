@@ -12,8 +12,8 @@ RestartSec=5
 # User=openclaw
 
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/env fix-my-claw monitor --config /etc/fix-my-claw/config.toml
+# Render @FIX_MY_CLAW_BIN@ and @CONFIG_PATH@ before installing.
+ExecStart=@FIX_MY_CLAW_BIN@ monitor --config @CONFIG_PATH@
 
 [Install]
 WantedBy=multi-user.target
-

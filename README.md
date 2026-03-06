@@ -82,6 +82,7 @@ All settings live in a single TOML file.
 - Default: `~/.fix-my-claw/config.toml`
 - Example: `examples/fix-my-claw.toml`
 - New: `[anomaly_guard]` can mark ping-pong/repetition patterns as unhealthy even when gateway probes still pass.
+- `auto_dispatch_check` now analyzes real handoffs: who delegated, who was the target, and whether an unexpected agent keeps speaking afterwards.
 - New: `[notify]` supports Discord notifications and yes/no approval prompts.
 - Note: status notifications are always sent; `yes/no` approval is only used when `ai.enabled = true`.
 - Note: when `notify.target` is a channel (`channel:...`), yes/no replies must mention the notify account (for example, `@fix-my-claw yes`).
@@ -104,7 +105,8 @@ Example (Option A):
 sudo mkdir -p /etc/fix-my-claw
 sudo cp examples/fix-my-claw.toml /etc/fix-my-claw/config.toml
 
-sudo cp deploy/systemd/fix-my-claw.service /etc/systemd/system/
+FIX_MY_CLAW_BIN="$(command -v fix-my-claw)"
+sudo ./deploy/systemd/install.sh --fix-my-claw-bin "$FIX_MY_CLAW_BIN"
 sudo systemctl daemon-reload
 sudo systemctl enable --now fix-my-claw.service
 ```
@@ -116,6 +118,12 @@ One-click install (single entrypoint):
 ```bash
 ./deploy/launchd/install.sh
 source ~/.zshrc
+```
+
+If `fix-my-claw` is not resolvable from your shell, pass it explicitly:
+
+```bash
+./deploy/launchd/install.sh --fix-my-claw-bin "$(command -v fix-my-claw)"
 ```
 
 Behavior:

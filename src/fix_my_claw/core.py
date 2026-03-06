@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -85,7 +86,7 @@ min_signature_chars = 16
 auto_dispatch_check = true
 dispatch_window_lines = 20
 keywords_dispatch = ["dispatch", "handoff", "delegate", "assign", "开始实施", "开始执行", "派给", "转交"]
-keywords_architect_active = ["architect", "still output", "continue output", "还在输出", "继续发内容", "连续输出"]
+min_post_dispatch_unexpected_turns = 2
 similarity_enabled = true
 similarity_threshold = 0.82
 similarity_min_chars = 12
@@ -118,6 +119,16 @@ args_code = [
 ]
 """
 
+ROLE_ALIASES: dict[str, tuple[str, ...]] = {
+    "user": ("user", "用户", "human"),
+    "orchestrator": ("orchestrator", "调度", "协调"),
+    "builder": ("builder", "实施", "执行器", "构建"),
+    "architect": ("architect", "架构"),
+    "research": ("research", "researcher", "研究", "调研"),
+}
+
+AGENT_ROLES = frozenset({"orchestrator", "builder", "architect", "research"})
+
 
 def _expand_path(value: str) -> str:
     return os.path.expanduser(os.path.expandvars(value))
@@ -140,6 +151,8 @@ def truncate_for_log(s: str, limit: int = 8000) -> str:
 _SECRET_PATTERNS = [
     r"\bsk-[A-Za-z0-9]{16,}\b",
 ]
+
+LOCK_INITIALIZING_GRACE_SECONDS = 2.0
 
 
 def redact_text(text: str) -> str:
@@ -300,6 +313,8 @@ class AnomalyGuardConfig:
             "转交",
         ]
     )
+    min_post_dispatch_unexpected_turns: int = 2
+    # Legacy compatibility key; no longer used for new dispatch analysis.
     keywords_architect_active: list[str] = field(
         default_factory=lambda: [
             "architect",
@@ -444,6 +459,16 @@ def _parse_anomaly_guard(raw: dict[str, Any]) -> AnomalyGuardConfig:
         auto_dispatch_check=bool(_get(raw, "auto_dispatch_check", cfg.auto_dispatch_check)),
         dispatch_window_lines=max(1, int(_get(raw, "dispatch_window_lines", cfg.dispatch_window_lines))),
         keywords_dispatch=[str(x).strip() for x in _get(raw, "keywords_dispatch", cfg.keywords_dispatch)],
+        min_post_dispatch_unexpected_turns=max(
+            2,
+            int(
+                _get(
+                    raw,
+                    "min_post_dispatch_unexpected_turns",
+                    cfg.min_post_dispatch_unexpected_turns,
+                )
+            ),
+        ),
         keywords_architect_active=[
             str(x).strip() for x in _get(raw, "keywords_architect_active", cfg.keywords_architect_active)
         ],
@@ -616,6 +641,14 @@ class FileLock:
 
         if pid is None:
             try:
+                age_seconds = max(0.0, time.time() - self.path.stat().st_mtime)
+            except FileNotFoundError:
+                return True
+            except Exception:
+                return False
+            if age_seconds < LOCK_INITIALIZING_GRACE_SECONDS:
+                return False
+            try:
                 self.path.unlink(missing_ok=True)
                 return True
             except Exception:
@@ -695,9 +728,10 @@ class StateStore:
     def __init__(self, base_dir: Path):
         self.base_dir = base_dir
         self.path = base_dir / "state.json"
+        self.lock_path = base_dir / "state.lock"
         ensure_dir(base_dir)
 
-    def load(self) -> State:
+    def _load_unlocked(self) -> State:
         if not self.path.exists():
             return State()
         try:
@@ -706,16 +740,34 @@ class StateStore:
         except Exception:
             return State()
 
-    def save(self, state: State) -> None:
+    def load(self) -> State:
+        return self._load_unlocked()
+
+    def _save_unlocked(self, state: State) -> None:
         ensure_dir(self.path.parent)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(state.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.path)
 
+    def _with_lock(self, fn: Any, *, timeout_seconds: int = 5) -> Any:
+        lock = FileLock(self.lock_path)
+        if not lock.acquire(timeout_seconds=timeout_seconds):
+            raise TimeoutError(f"timed out waiting for state lock: {self.lock_path}")
+        try:
+            return fn()
+        finally:
+            lock.release()
+
+    def save(self, state: State) -> None:
+        self._with_lock(lambda: self._save_unlocked(state))
+
     def mark_ok(self) -> None:
-        s = self.load()
-        s.last_ok_ts = _now_ts()
-        self.save(s)
+        def _update() -> None:
+            s = self._load_unlocked()
+            s.last_ok_ts = _now_ts()
+            self._save_unlocked(s)
+
+        self._with_lock(_update)
 
     def can_attempt_repair(self, cooldown_seconds: int, *, force: bool) -> bool:
         if force:
@@ -726,34 +778,43 @@ class StateStore:
         return (_now_ts() - s.last_repair_ts) >= cooldown_seconds
 
     def mark_repair_attempt(self) -> None:
-        s = self.load()
-        s.last_repair_ts = _now_ts()
-        self.save(s)
+        def _update() -> None:
+            s = self._load_unlocked()
+            s.last_repair_ts = _now_ts()
+            self._save_unlocked(s)
+
+        self._with_lock(_update)
 
     def can_attempt_ai(self, *, max_attempts_per_day: int, cooldown_seconds: int) -> bool:
-        s = self.load()
-        today = _today_ymd()
-        if s.ai_attempts_day != today:
-            s.ai_attempts_day = today
-            s.ai_attempts_count = 0
-            s.last_ai_ts = None
-            self.save(s)
+        def _check() -> bool:
+            s = self._load_unlocked()
+            today = _today_ymd()
+            if s.ai_attempts_day != today:
+                s.ai_attempts_day = today
+                s.ai_attempts_count = 0
+                s.last_ai_ts = None
+                self._save_unlocked(s)
 
-        if s.ai_attempts_count >= max_attempts_per_day:
-            return False
-        if s.last_ai_ts is not None and (_now_ts() - s.last_ai_ts) < cooldown_seconds:
-            return False
-        return True
+            if s.ai_attempts_count >= max_attempts_per_day:
+                return False
+            if s.last_ai_ts is not None and (_now_ts() - s.last_ai_ts) < cooldown_seconds:
+                return False
+            return True
+
+        return bool(self._with_lock(_check))
 
     def mark_ai_attempt(self) -> None:
-        s = self.load()
-        today = _today_ymd()
-        if s.ai_attempts_day != today:
-            s.ai_attempts_day = today
-            s.ai_attempts_count = 0
-        s.ai_attempts_count += 1
-        s.last_ai_ts = _now_ts()
-        self.save(s)
+        def _update() -> None:
+            s = self._load_unlocked()
+            today = _today_ymd()
+            if s.ai_attempts_day != today:
+                s.ai_attempts_day = today
+                s.ai_attempts_count = 0
+            s.ai_attempts_count += 1
+            s.last_ai_ts = _now_ts()
+            self._save_unlocked(s)
+
+        self._with_lock(_update)
 
 
 @dataclass(frozen=True)
@@ -827,21 +888,106 @@ def _normalize_loop_line(line: str) -> str:
     return s
 
 
+def _find_token_index(text: str, token: str) -> int:
+    if not token:
+        return -1
+    if re.search(r"[a-z0-9_]", token):
+        match = re.search(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", text)
+        return match.start() if match else -1
+    return text.find(token)
+
+
+def _extract_speaker_role(line: str) -> str | None:
+    s = line.strip().lower()
+    s = re.sub(r"^\[[^\]]+\]\s*", "", s)
+    s = re.sub(r"^\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+", "", s)
+    for role, aliases in ROLE_ALIASES.items():
+        for alias in aliases:
+            prefixes = (
+                f"{alias}:",
+                f"{alias}：",
+                f"{alias} ",
+                f"{alias}>",
+                f"{alias}-",
+                f"[{alias}]",
+                f"[{alias}] ",
+            )
+            if s == alias or any(s.startswith(prefix) for prefix in prefixes):
+                return role
+    return None
+
+
 def _extract_role(line: str) -> str | None:
-    role_patterns: list[tuple[str, list[str]]] = [
-        ("user", ["user:", " user ", "用户", "human"]),
-        ("orchestrator", ["orchestrator", "调度", "协调"]),
-        ("builder", ["builder", "实施", "执行器", "构建"]),
-        ("architect", ["architect", "架构"]),
-    ]
-    for role, pats in role_patterns:
-        if any(p in line for p in pats):
+    speaker = _extract_speaker_role(line)
+    if speaker:
+        return speaker
+    for role, aliases in ROLE_ALIASES.items():
+        if any(_find_token_index(line, alias) >= 0 for alias in aliases):
             return role
     return None
 
 
 def _contains_any(text: str, tokens: list[str]) -> bool:
-    return any(t for t in tokens if t and t in text)
+    return any(_find_token_index(text, t) >= 0 for t in tokens if t)
+
+
+def _extract_handoff_target_role(
+    line: str,
+    *,
+    dispatch_tokens: list[str],
+    speaker_role: str,
+) -> str | None:
+    dispatch_hit: tuple[int, str] | None = None
+    for token in dispatch_tokens:
+        idx = _find_token_index(line, token)
+        if idx >= 0 and (dispatch_hit is None or idx < dispatch_hit[0]):
+            dispatch_hit = (idx, token)
+    if dispatch_hit is None:
+        return None
+
+    tail = line[dispatch_hit[0] + len(dispatch_hit[1]) :]
+    target_hit: tuple[int, str] | None = None
+    for role in AGENT_ROLES:
+        if role == speaker_role:
+            continue
+        for alias in ROLE_ALIASES.get(role, ()):
+            idx = _find_token_index(tail, alias)
+            if idx >= 0 and (target_hit is None or idx < target_hit[0]):
+                target_hit = (idx, role)
+    return target_hit[1] if target_hit else None
+
+
+def _find_unexpected_post_dispatch_streak(
+    lines: list[str],
+    *,
+    start_idx: int,
+    expected_role: str,
+    max_lines: int,
+    min_turns: int,
+) -> dict[str, Any] | None:
+    streak_role: str | None = None
+    streak_count = 0
+    for rel_idx, raw in enumerate(lines[start_idx + 1 : start_idx + 1 + max_lines], start=1):
+        speaker_role = _extract_speaker_role(raw)
+        if speaker_role not in AGENT_ROLES:
+            continue
+        if speaker_role == expected_role:
+            streak_role = None
+            streak_count = 0
+            continue
+        if speaker_role == streak_role:
+            streak_count += 1
+        else:
+            streak_role = speaker_role
+            streak_count = 1
+        if streak_count >= min_turns:
+            return {
+                "unexpected_role": speaker_role,
+                "turns": streak_count,
+                "unexpected_line_index": start_idx + rel_idx,
+                "unexpected_line": raw,
+            }
+    return None
 
 
 def _calc_similarity(a: str, b: str) -> float:
@@ -884,7 +1030,6 @@ def _analyze_anomaly_guard(cfg: AppConfig) -> dict:
     stop_tokens = [x.lower() for x in cfg.anomaly_guard.keywords_stop if x]
     repeat_tokens = [x.lower() for x in cfg.anomaly_guard.keywords_repeat if x]
     dispatch_tokens = [x.lower() for x in cfg.anomaly_guard.keywords_dispatch if x]
-    architect_tokens = [x.lower() for x in cfg.anomaly_guard.keywords_architect_active if x]
 
     if not logs.ok:
         return {
@@ -899,16 +1044,16 @@ def _analyze_anomaly_guard(cfg: AppConfig) -> dict:
     stop_roles: set[str] = set()
     signatures: Counter[str] = Counter()
     ping_roles: list[str] = []
-    dispatch_idx: list[int] = []
-    architect_active_idx: list[int] = []
-    
+    dispatch_events: list[dict[str, Any]] = []
+
     # Similarity-based grouping for single-agent loop detection.
     # Keep groups per role to avoid mixing orchestrator and builder messages.
     similar_groups_by_role: dict[str, list[tuple[str, list[str]]]] = {}
 
     for idx, raw in enumerate(lines):
         normalized = _normalize_loop_line(raw)
-        role = _extract_role(normalized)
+        speaker_role = _extract_speaker_role(raw)
+        role = speaker_role or _extract_role(normalized)
         is_stop = _contains_any(normalized, stop_tokens)
         is_repeat = _contains_any(normalized, repeat_tokens)
 
@@ -937,11 +1082,25 @@ def _analyze_anomaly_guard(cfg: AppConfig) -> dict:
         if role in {"orchestrator", "builder"} and (is_stop or is_repeat):
             ping_roles.append(role)
 
-        if cfg.anomaly_guard.auto_dispatch_check:
-            if _contains_any(normalized, dispatch_tokens):
-                dispatch_idx.append(idx)
-            if _contains_any(normalized, architect_tokens):
-                architect_active_idx.append(idx)
+        if (
+            cfg.anomaly_guard.auto_dispatch_check
+            and speaker_role in AGENT_ROLES
+            and _contains_any(normalized, dispatch_tokens)
+        ):
+            target_role = _extract_handoff_target_role(
+                normalized,
+                dispatch_tokens=dispatch_tokens,
+                speaker_role=speaker_role,
+            )
+            if target_role:
+                dispatch_events.append(
+                    {
+                        "dispatch_line_index": idx,
+                        "initiator_role": speaker_role,
+                        "target_role": target_role,
+                        "dispatch_line": raw,
+                    }
+                )
 
     ping_pong_turns = 0
     for i in range(1, len(ping_roles)):
@@ -972,12 +1131,20 @@ def _analyze_anomaly_guard(cfg: AppConfig) -> dict:
     ping_pong_trigger = ping_pong_turns >= cfg.anomaly_guard.min_ping_pong_turns
 
     auto_dispatch_trigger = False
-    if cfg.anomaly_guard.auto_dispatch_check and dispatch_idx and architect_active_idx:
-        auto_dispatch_trigger = any(
-            abs(d - a) <= cfg.anomaly_guard.dispatch_window_lines
-            for d in dispatch_idx
-            for a in architect_active_idx
-        )
+    auto_dispatch_event: dict[str, Any] | None = None
+    if cfg.anomaly_guard.auto_dispatch_check:
+        for event in dispatch_events:
+            unexpected = _find_unexpected_post_dispatch_streak(
+                lines,
+                start_idx=int(event["dispatch_line_index"]),
+                expected_role=str(event["target_role"]),
+                max_lines=cfg.anomaly_guard.dispatch_window_lines,
+                min_turns=cfg.anomaly_guard.min_post_dispatch_unexpected_turns,
+            )
+            if unexpected is not None:
+                auto_dispatch_trigger = True
+                auto_dispatch_event = {**event, **unexpected}
+                break
 
     # Allow semantic repetition to trigger on its own; requiring stop signals misses
     # practical loop cases where agents keep repeating without explicit "stop" text.
@@ -996,6 +1163,7 @@ def _analyze_anomaly_guard(cfg: AppConfig) -> dict:
             "top_signature": top_signature,
             "max_similar_repeats": max_similar_repeats,
             "top_similar_group": top_similar_group,
+            "auto_dispatch_event": auto_dispatch_event,
         },
         "signals": {
             "repeat_trigger": repeat_trigger,
@@ -1023,14 +1191,7 @@ class CheckResult:
 
 
 def run_check(cfg: AppConfig, store: StateStore) -> CheckResult:
-    h = probe_health(cfg)
-    s = probe_status(cfg)
-    healthy = h.ok and s.ok
-    anomaly_guard: dict | None = None
-    if healthy and cfg.anomaly_guard.enabled:
-        anomaly_guard = _analyze_anomaly_guard(cfg)
-        if anomaly_guard.get("triggered"):
-            healthy = False
+    healthy, h, s, anomaly_guard = _evaluate_health(cfg)
     if healthy:
         store.mark_ok()
     return CheckResult(
@@ -1408,10 +1569,10 @@ class RepairResult:
 
 
 def _attempt_dir(cfg: AppConfig) -> Path:
+    base = cfg.monitor.state_dir / "attempts"
+    ensure_dir(base)
     ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-    d = cfg.monitor.state_dir / "attempts" / ts
-    ensure_dir(d)
-    return d
+    return Path(tempfile.mkdtemp(prefix=f"{ts}-", dir=str(base)))
 
 
 def _write_attempt_file(dir_: Path, name: str, content: str) -> Path:
@@ -1451,29 +1612,34 @@ def _collect_context(cfg: AppConfig, attempt_dir: Path, *, stage_name: str) -> d
         "attempt_dir": str(attempt_dir.resolve()),
     }
 
-
-def _probe_is_healthy(cfg: AppConfig) -> bool:
-    return probe_health(cfg, log_on_fail=False).ok and probe_status(cfg, log_on_fail=False).ok
-
-
-def _is_effectively_healthy(cfg: AppConfig, *, reason: str | None = None) -> tuple[bool, dict | None]:
-    health = probe_health(cfg, log_on_fail=False)
-    status = probe_status(cfg, log_on_fail=False)
-    if not (health.ok and status.ok):
-        if reason in {"anomaly_guard", "loop_guard"}:
-            return (
-                False,
-                {
-                    "probe_ok": False,
-                    "health": health.to_json(),
-                    "status": status.to_json(),
-                },
-            )
-        return False, None
-    if reason in {"anomaly_guard", "loop_guard"} and cfg.anomaly_guard.enabled:
+def _evaluate_health(
+    cfg: AppConfig,
+    *,
+    log_probe_failures: bool = False,
+) -> tuple[bool, Probe, Probe, dict | None]:
+    health = probe_health(cfg, log_on_fail=log_probe_failures)
+    status = probe_status(cfg, log_on_fail=log_probe_failures)
+    healthy = health.ok and status.ok
+    anomaly_guard: dict | None = None
+    if healthy and cfg.anomaly_guard.enabled:
         anomaly_guard = _analyze_anomaly_guard(cfg)
-        return (not bool(anomaly_guard.get("triggered"))), anomaly_guard
-    return True, None
+        if anomaly_guard.get("triggered"):
+            healthy = False
+    return healthy, health, status, anomaly_guard
+
+
+def _is_effectively_healthy(cfg: AppConfig) -> tuple[bool, dict | None]:
+    healthy, health, status, anomaly_guard = _evaluate_health(cfg, log_probe_failures=False)
+    if not (health.ok and status.ok):
+        return (
+            False,
+            {
+                "probe_ok": False,
+                "health": health.to_json(),
+                "status": status.to_json(),
+            },
+        )
+    return healthy, anomaly_guard
 
 
 def _run_official_steps(cfg: AppConfig, attempt_dir: Path, *, break_on_healthy: bool = True) -> list[dict]:
@@ -1508,7 +1674,7 @@ def _run_official_steps(cfg: AppConfig, attempt_dir: Path, *, break_on_healthy: 
             }
         )
         time.sleep(cfg.repair.post_step_wait_seconds)
-        if break_on_healthy and _probe_is_healthy(cfg):
+        if break_on_healthy and _is_effectively_healthy(cfg)[0]:
             repair_log.warning("OpenClaw is healthy after official step %d/%d", idx, total)
             break
     return results
@@ -1577,9 +1743,13 @@ def attempt_repair(
     reason: str | None = None,
 ) -> RepairResult:
     repair_log = logging.getLogger("fix_my_claw.repair")
-    if _probe_is_healthy(cfg) and reason not in {"anomaly_guard", "loop_guard"}:
+    initially_healthy, initial_health_info = _is_effectively_healthy(cfg)
+    if initially_healthy:
         repair_log.info("repair skipped: already healthy")
-        return RepairResult(attempted=False, fixed=True, used_ai=False, details={"already_healthy": True})
+        details: dict[str, object] = {"already_healthy": True}
+        if initial_health_info is not None:
+            details["health_info"] = initial_health_info
+        return RepairResult(attempted=False, fixed=True, used_ai=False, details=details)
 
     if not cfg.repair.enabled:
         repair_log.warning("repair skipped: disabled by config")
@@ -1597,8 +1767,8 @@ def attempt_repair(
             repair_log.info("repair skipped: cooldown")
         return RepairResult(attempted=False, fixed=False, used_ai=False, details=details)
 
-    store.mark_repair_attempt()
     attempt_dir = _attempt_dir(cfg)
+    store.mark_repair_attempt()
     details: dict = {"attempt_dir": str(attempt_dir.resolve())}
     if reason:
         details["reason"] = reason
@@ -1627,11 +1797,11 @@ def attempt_repair(
     details["official"] = _run_official_steps(
         cfg,
         attempt_dir,
-        break_on_healthy=(reason not in {"anomaly_guard", "loop_guard"}),
+        break_on_healthy=True,
     )
     details["context_after_official"] = _collect_context(cfg, attempt_dir, stage_name="after_official")
 
-    healthy_after_official, anomaly_guard_after_official = _is_effectively_healthy(cfg, reason=reason)
+    healthy_after_official, anomaly_guard_after_official = _is_effectively_healthy(cfg)
     if anomaly_guard_after_official is not None:
         details["anomaly_guard_after_official"] = anomaly_guard_after_official
     if healthy_after_official:
@@ -1649,7 +1819,7 @@ def attempt_repair(
             "fix-my-claw: 官方修复后仍异常，且 ai.enabled=false，本轮不会发起 yes/no 与 Codex 修复，请人工介入。",
             silent=False,
         )
-        fixed, anomaly_guard_final = _is_effectively_healthy(cfg, reason=reason)
+        fixed, anomaly_guard_final = _is_effectively_healthy(cfg)
         if anomaly_guard_final is not None:
             details["anomaly_guard_final"] = anomaly_guard_final
         return RepairResult(attempted=True, fixed=fixed, used_ai=False, details=details)
@@ -1664,7 +1834,7 @@ def attempt_repair(
             "fix-my-claw: Codex 修复被限流（每日次数或冷却期），本轮跳过。",
             silent=False,
         )
-        fixed, anomaly_guard_final = _is_effectively_healthy(cfg, reason=reason)
+        fixed, anomaly_guard_final = _is_effectively_healthy(cfg)
         if anomaly_guard_final is not None:
             details["anomaly_guard_final"] = anomaly_guard_final
         return RepairResult(attempted=True, fixed=fixed, used_ai=False, details=details)
@@ -1677,7 +1847,7 @@ def attempt_repair(
             "fix-my-claw: 未收到 yes（含 no/timeout/发送失败/多次无效回复），本轮不会启用 Codex 修复。",
             silent=False,
         )
-        fixed, anomaly_guard_final = _is_effectively_healthy(cfg, reason=reason)
+        fixed, anomaly_guard_final = _is_effectively_healthy(cfg)
         if anomaly_guard_final is not None:
             details["anomaly_guard_final"] = anomaly_guard_final
         return RepairResult(attempted=True, fixed=fixed, used_ai=False, details=details)
@@ -1692,7 +1862,7 @@ def attempt_repair(
             f"fix-my-claw: 收到 yes，但备份失败，已停止 Codex 修复。错误：{e}",
             silent=False,
         )
-        fixed, anomaly_guard_final = _is_effectively_healthy(cfg, reason=reason)
+        fixed, anomaly_guard_final = _is_effectively_healthy(cfg)
         if anomaly_guard_final is not None:
             details["anomaly_guard_final"] = anomaly_guard_final
         return RepairResult(attempted=True, fixed=fixed, used_ai=False, details=details)
@@ -1708,7 +1878,7 @@ def attempt_repair(
     details["ai_stage"] = "config"
     details["ai_result_config"] = _run_ai_repair(cfg, attempt_dir, code_stage=False).__dict__
     details["context_after_ai_config"] = _collect_context(cfg, attempt_dir, stage_name="after_ai_config")
-    healthy_after_ai_config, anomaly_guard_after_ai_config = _is_effectively_healthy(cfg, reason=reason)
+    healthy_after_ai_config, anomaly_guard_after_ai_config = _is_effectively_healthy(cfg)
     if anomaly_guard_after_ai_config is not None:
         details["anomaly_guard_after_ai_config"] = anomaly_guard_after_ai_config
     if healthy_after_ai_config:
@@ -1724,7 +1894,7 @@ def attempt_repair(
         details["ai_stage"] = "code"
         details["ai_result_code"] = _run_ai_repair(cfg, attempt_dir, code_stage=True).__dict__
         details["context_after_ai_code"] = _collect_context(cfg, attempt_dir, stage_name="after_ai_code")
-        healthy_after_ai_code, anomaly_guard_after_ai_code = _is_effectively_healthy(cfg, reason=reason)
+        healthy_after_ai_code, anomaly_guard_after_ai_code = _is_effectively_healthy(cfg)
         if anomaly_guard_after_ai_code is not None:
             details["anomaly_guard_after_ai_code"] = anomaly_guard_after_ai_code
         if healthy_after_ai_code:
@@ -1736,7 +1906,7 @@ def attempt_repair(
             repair_log.warning("recovered by code-stage remediation: dir=%s", attempt_dir.resolve())
             return RepairResult(attempted=True, fixed=True, used_ai=True, details=details)
 
-    fixed, anomaly_guard_final = _is_effectively_healthy(cfg, reason=reason)
+    fixed, anomaly_guard_final = _is_effectively_healthy(cfg)
     if anomaly_guard_final is not None:
         details["anomaly_guard_final"] = anomaly_guard_final
     details["notify_final"] = _notify_send(

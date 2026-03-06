@@ -14,7 +14,7 @@ This change adds a generalized **anomaly guard** so fix-my-claw can detect and r
    - stop/cancel signal frequency
    - repeated orchestrator/builder message signatures
    - orchestrator↔builder ping-pong turns
-   - optional architect-active + dispatch-nearby signal
+   - optional real handoff analysis: initiator, target role, and unexpected post-handoff speaker streak
 3. Integrated detector into `run_check`:
    - detector hit => `healthy = false`
 4. Integrated detector into repair flow:

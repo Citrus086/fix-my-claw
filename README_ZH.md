@@ -107,6 +107,7 @@ flowchart TD
 - 默认：`~/.fix-my-claw/config.toml`
 - 示例：`examples/fix-my-claw.toml`
 - 新增：`[anomaly_guard]` 可把 ping-pong/重复输出模式判定为不健康（即便 gateway 探针仍成功）。
+- `auto_dispatch_check` 现在按真实 handoff 分析：识别谁发起交接、交接给谁，再判断后续是否由非预期角色持续输出。
 - 新增：`[notify]` 可配置 Discord 通知与 yes/no 询问。
 - 说明：流程状态通知始终会发送；`yes/no` 询问仅在 `ai.enabled = true` 时生效。
 - 说明：当 `notify.target` 指向频道（`channel:...`）时，yes/no 需要在消息里 `@` 当前通知账号（如 `@fix-my-claw yes`）。
@@ -129,7 +130,8 @@ flowchart TD
 sudo mkdir -p /etc/fix-my-claw
 sudo cp examples/fix-my-claw.toml /etc/fix-my-claw/config.toml
 
-sudo cp deploy/systemd/fix-my-claw.service /etc/systemd/system/
+FIX_MY_CLAW_BIN="$(command -v fix-my-claw)"
+sudo ./deploy/systemd/install.sh --fix-my-claw-bin "$FIX_MY_CLAW_BIN"
 sudo systemctl daemon-reload
 sudo systemctl enable --now fix-my-claw.service
 ```
@@ -141,6 +143,12 @@ sudo systemctl enable --now fix-my-claw.service
 ```bash
 ./deploy/launchd/install.sh
 source ~/.zshrc
+```
+
+如果当前 shell 里 `fix-my-claw` 解析不到，也可以显式传入：
+
+```bash
+./deploy/launchd/install.sh --fix-my-claw-bin "$(command -v fix-my-claw)"
 ```
 
 行为：
