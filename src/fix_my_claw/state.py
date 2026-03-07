@@ -3,7 +3,6 @@ from __future__ import annotations
 import errno
 import json
 import os
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,16 +11,6 @@ from typing import Any
 from .shared import ensure_dir
 
 LOCK_INITIALIZING_GRACE_SECONDS = 2.0
-
-
-def _core_override(name: str) -> Any | None:
-    core_module = sys.modules.get("fix_my_claw.core")
-    if core_module is None:
-        return None
-    override = getattr(core_module, name, None)
-    if override is globals().get(name):
-        return None
-    return override
 
 
 @dataclass
@@ -131,16 +120,10 @@ class FileLock:
 
 
 def _now_ts() -> int:
-    override = _core_override("_now_ts")
-    if override is not None:
-        return int(override())
     return int(time.time())
 
 
 def _today_ymd() -> str:
-    override = _core_override("_today_ymd")
-    if override is not None:
-        return str(override())
     return time.strftime("%Y-%m-%d", time.localtime())
 
 

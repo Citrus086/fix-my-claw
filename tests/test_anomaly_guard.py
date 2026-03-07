@@ -10,8 +10,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from fix_my_claw import anomaly_guard as anomaly_guard_module
 from fix_my_claw import cli
+from fix_my_claw import config as config_module
 from fix_my_claw import core
+from fix_my_claw import monitor
+from fix_my_claw import notify as notify_module
+from fix_my_claw import repair as repair_module
+from fix_my_claw import state as state_module
 
 
 def _make_cmd_result(
@@ -166,7 +172,7 @@ stagnation_max_novel_cluster_ratio = 0.4
             self.assertAlmostEqual(cfg.anomaly_guard.stagnation_max_novel_cluster_ratio, 0.4)
 
     def test_parse_repair_filters_empty_official_steps(self) -> None:
-        repair = core._parse_repair(
+        repair = config_module._parse_repair(
             {
                 "enabled": True,
                 "official_steps": [
@@ -179,7 +185,7 @@ stagnation_max_novel_cluster_ratio = 0.4
         self.assertEqual(repair.official_steps, [["openclaw", "doctor", "--repair"]])
 
     def test_parse_notify_read_timeout_falls_back_to_send_timeout(self) -> None:
-        notify = core._parse_notify(
+        notify = config_module._parse_notify(
             {
                 "send_timeout_seconds": 42,
             }
@@ -188,7 +194,7 @@ stagnation_max_novel_cluster_ratio = 0.4
         self.assertEqual(notify.read_timeout_seconds, 42)
 
     def test_parse_monitor_sanitizes_invalid_timing_values(self) -> None:
-        monitor = core._parse_monitor(
+        monitor = config_module._parse_monitor(
             {
                 "interval_seconds": -5,
                 "probe_timeout_seconds": 0,
@@ -200,7 +206,7 @@ stagnation_max_novel_cluster_ratio = 0.4
         self.assertEqual(monitor.repair_cooldown_seconds, 0)
 
     def test_parse_ai_sanitizes_invalid_limits(self) -> None:
-        ai = core._parse_ai(
+        ai = config_module._parse_ai(
             {
                 "timeout_seconds": 0,
                 "max_attempts_per_day": -2,
@@ -242,10 +248,10 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             json_data={},
         )
 
-        with patch.object(core, "probe_health", return_value=ok_probe), patch.object(
-            core, "probe_status", return_value=status_probe
+        with patch.object(repair_module, "probe_health", return_value=ok_probe), patch.object(
+            repair_module, "probe_status", return_value=status_probe
         ), patch.object(
-            core,
+            repair_module,
             "_analyze_anomaly_guard",
             return_value={"triggered": True, "signals": {"ping_pong_trigger": True}},
         ):
@@ -278,7 +284,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["ping_pong_trigger"])
         self.assertTrue(info["signals"]["cycle_trigger"])
@@ -309,7 +315,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["ping_pong_trigger"])
         self.assertTrue(info["signals"]["cycle_trigger"])
@@ -337,7 +343,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertFalse(info["triggered"])
         self.assertFalse(info["signals"]["repeat_trigger"])
         self.assertFalse(info["signals"]["similar_repeat_trigger"])
@@ -372,7 +378,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["similar_repeat_trigger"])
         self.assertEqual(info["metrics"]["max_similar_repeat_run_repetitions"], 3)
@@ -405,7 +411,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["cycle_trigger"])
         self.assertTrue(info["signals"]["ping_pong_trigger"])
@@ -440,7 +446,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["cycle_trigger"])
         self.assertFalse(info["signals"]["ping_pong_trigger"])
@@ -478,7 +484,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         cycle_detector = next(detector for detector in info["detectors"] if detector["detector"] == "cycle")
         self.assertTrue(cycle_detector["triggered"])
         self.assertEqual(cycle_detector["period"], 3)
@@ -519,7 +525,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["cycle_trigger"])
         self.assertEqual(info["metrics"]["events_analyzed"], 8)
@@ -561,7 +567,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["stagnation_trigger"])
         self.assertFalse(info["signals"]["cycle_trigger"])
@@ -602,7 +608,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertFalse(info["signals"]["stagnation_trigger"])
         self.assertIsNone(info["metrics"]["stagnation_event"])
 
@@ -636,7 +642,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertFalse(info["triggered"])
         self.assertFalse(info["signals"]["similar_repeat_trigger"])
 
@@ -666,7 +672,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["auto_dispatch_trigger"])
         self.assertEqual(info["metrics"]["auto_dispatch_event"]["initiator_role"], "orchestrator")
@@ -701,7 +707,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertFalse(info["triggered"])
         self.assertFalse(info["signals"]["auto_dispatch_trigger"])
 
@@ -731,7 +737,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["auto_dispatch_trigger"])
         self.assertEqual(info["metrics"]["auto_dispatch_event"]["target_role"], "research")
@@ -762,7 +768,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             stdout=log_text,
             stderr="",
         )
-        info = core._analyze_anomaly_guard(cfg, logs=log_result)
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
         self.assertTrue(info["triggered"])
         self.assertTrue(info["signals"]["auto_dispatch_trigger"])
         self.assertEqual(info["metrics"]["auto_dispatch_event"]["initiator_role"], "orchestrator")
@@ -789,11 +795,11 @@ class TestNotifyDecision(unittest.TestCase):
         outsider_msg = {"content": "yes", "author": {"id": "u2", "bot": False}}
         bot_msg = {"content": "yes", "author": {"id": "u1", "bot": True}}
 
-        self.assertEqual(core._extract_ai_decision(cfg, yes_msg), "yes")
-        self.assertEqual(core._extract_ai_decision(cfg, no_msg), "no")
-        self.assertIsNone(core._extract_ai_decision(cfg, invalid_msg))
-        self.assertIsNone(core._extract_ai_decision(cfg, outsider_msg))
-        self.assertIsNone(core._extract_ai_decision(cfg, bot_msg))
+        self.assertEqual(notify_module._extract_ai_decision(cfg, yes_msg), "yes")
+        self.assertEqual(notify_module._extract_ai_decision(cfg, no_msg), "no")
+        self.assertIsNone(notify_module._extract_ai_decision(cfg, invalid_msg))
+        self.assertIsNone(notify_module._extract_ai_decision(cfg, outsider_msg))
+        self.assertIsNone(notify_module._extract_ai_decision(cfg, bot_msg))
 
     def test_extract_ai_decision_requires_mention_for_channel_target(self) -> None:
         cfg = core.AppConfig(
@@ -814,15 +820,15 @@ class TestNotifyDecision(unittest.TestCase):
             "mentions": [{"id": "222", "username": "someone-else"}],
         }
 
-        self.assertIsNone(core._extract_ai_decision(cfg, plain_yes))
-        self.assertEqual(core._extract_ai_decision(cfg, mention_yes), "yes")
-        self.assertIsNone(core._extract_ai_decision(cfg, wrong_mention, required_mention_id="1479170394580848660"))
+        self.assertIsNone(notify_module._extract_ai_decision(cfg, plain_yes))
+        self.assertEqual(notify_module._extract_ai_decision(cfg, mention_yes), "yes")
+        self.assertIsNone(notify_module._extract_ai_decision(cfg, wrong_mention, required_mention_id="1479170394580848660"))
         self.assertEqual(
-            core._extract_ai_decision(cfg, mention_yes, required_mention_id="1479170394580848660"),
+            notify_module._extract_ai_decision(cfg, mention_yes, required_mention_id="1479170394580848660"),
             "yes",
         )
         self.assertEqual(
-            core._extract_ai_decision(
+            notify_module._extract_ai_decision(
                 cfg,
                 {"content": "<@1479170394580848660> yes", "author": {"id": "u1", "bot": False}},
                 required_mention_id="1479170394580848660",
@@ -862,10 +868,14 @@ class TestNotifyDecision(unittest.TestCase):
                 "mentions": [{"id": "1479170394580848660", "username": "fix-my-claw"}],
             },
         ]
-        with patch.object(core, "_notify_send", side_effect=[sent_payload, {"sent": True}, {"sent": True}]) as notify_mock, patch.object(
-            core, "_resolve_sent_message_author_id", return_value="1479170394580848660"
-        ), patch.object(core, "_notify_read_messages", side_effect=[invalid_replies]):
-            out = core._ask_user_enable_ai(cfg, attempt_dir)
+        with patch.object(
+            notify_module,
+            "_notify_send",
+            side_effect=[sent_payload, {"sent": True}, {"sent": True}],
+        ) as notify_mock, patch.object(
+            notify_module, "_resolve_sent_message_author_id", return_value="1479170394580848660"
+        ), patch.object(notify_module, "_notify_read_messages", side_effect=[invalid_replies]):
+            out = notify_module._ask_user_enable_ai(cfg, attempt_dir)
             self.assertEqual(out.get("decision"), "invalid_limit")
             self.assertEqual(out.get("invalid_replies"), 3)
             self.assertEqual(notify_mock.call_count, 3)
@@ -893,16 +903,16 @@ class TestNotifyDecision(unittest.TestCase):
                 ]
             return []
 
-        with patch.object(core, "_notify_send", return_value={"sent": True, "message_id": "m-ask"}), patch.object(
-            core, "_resolve_sent_message_author_id", return_value="1479170394580848660"
+        with patch.object(notify_module, "_notify_send", return_value={"sent": True, "message_id": "m-ask"}), patch.object(
+            notify_module, "_resolve_sent_message_author_id", return_value="1479170394580848660"
         ), patch.object(
-            core, "_notify_read_messages", side_effect=_read_side_effect
+            notify_module, "_notify_read_messages", side_effect=_read_side_effect
         ), patch.object(
-            core.time, "monotonic", side_effect=[0, 0, 0.5, 2]
+            notify_module.time, "monotonic", side_effect=[0, 0, 0.5, 2]
         ), patch.object(
-            core.time, "sleep", return_value=None
+            notify_module.time, "sleep", return_value=None
         ):
-            out = core._ask_user_enable_ai(cfg, attempt_dir)
+            out = notify_module._ask_user_enable_ai(cfg, attempt_dir)
             self.assertEqual(out.get("decision"), "timeout")
             self.assertEqual(after_ids, ["m-ask", "10"])
 
@@ -922,8 +932,8 @@ class TestNotifyDecision(unittest.TestCase):
             stdout=json.dumps(payload),
             stderr="",
         )
-        with patch.object(core, "run_cmd", return_value=cmd) as run_cmd_mock:
-            out = core._notify_read_messages(cfg)
+        with patch.object(notify_module, "run_cmd", return_value=cmd) as run_cmd_mock:
+            out = notify_module._notify_read_messages(cfg)
             self.assertEqual(out, [{"id": "m1"}])
             self.assertEqual(run_cmd_mock.call_args.kwargs["timeout_seconds"], 33)
 
@@ -938,8 +948,8 @@ class TestStateStoreAiRateLimit(unittest.TestCase):
                 ai_attempts_count=1,
             )
         )
-        with patch.object(core, "_today_ymd", return_value="2026-03-06"), patch.object(
-            core, "_now_ts", return_value=1_100
+        with patch.object(state_module, "_today_ymd", return_value="2026-03-06"), patch.object(
+            state_module, "_now_ts", return_value=1_100
         ):
             self.assertTrue(store.can_attempt_ai(max_attempts_per_day=2, cooldown_seconds=3_600))
         state = store.load()
@@ -956,7 +966,7 @@ class TestStateStoreAiRateLimit(unittest.TestCase):
                 ai_attempts_count=2,
             )
         )
-        with patch.object(core, "_now_ts", return_value=2_000):
+        with patch.object(state_module, "_now_ts", return_value=2_000):
             store.mark_ok()
         state = store.load()
         self.assertEqual(state.last_ok_ts, 2_000)
@@ -979,25 +989,25 @@ class TestRepairFlow(unittest.TestCase):
     def test_yes_runs_backup_then_ai(self) -> None:
         cfg = self._cfg()
         store = core.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(core, "_collect_context", return_value={}), patch.object(
-            core, "_run_session_command_stage", return_value=[]
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core,
+            repair_module,
             "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=True),
             ],
         ), patch.object(
-            core, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
+            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
         ), patch.object(
-            core, "_backup_openclaw_state", return_value={"archive": "/tmp/openclaw.backup.tar.gz"}
+            repair_module, "_backup_openclaw_state", return_value={"archive": "/tmp/openclaw.backup.tar.gz"}
         ) as backup_mock, patch.object(
-            core, "_run_ai_repair", return_value=self._cmd_ok()
+            repair_module, "_run_ai_repair", return_value=self._cmd_ok()
         ) as ai_mock, patch.object(
-            core, "_notify_send", return_value={"sent": True}
+            repair_module, "_notify_send", return_value={"sent": True}
         ):
             result = core.attempt_repair(cfg, store, force=True, reason=None)
             self.assertTrue(result.used_ai)
@@ -1007,16 +1017,16 @@ class TestRepairFlow(unittest.TestCase):
     def test_attempt_repair_exposes_typed_stage_pipeline(self) -> None:
         cfg = self._cfg()
         store = core.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(core, "_collect_context", return_value={"healthy": True}), patch.object(
-            core, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
+        with patch.object(repair_module, "_collect_context", return_value={"healthy": True}), patch.object(
+            repair_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
         ), patch.object(
-            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
         ), patch.object(
-            core,
+            repair_module,
             "_evaluate_health",
             return_value=_make_health_evaluation(effective_healthy=False),
         ), patch.object(
-            core, "_notify_send", return_value={"sent": True}
+            repair_module, "_notify_send", return_value={"sent": True}
         ):
             result = core.attempt_repair(cfg, store, force=True, reason="anomaly_guard")
             self.assertIsNotNone(result.outcome)
@@ -1024,31 +1034,31 @@ class TestRepairFlow(unittest.TestCase):
             if outcome is None:
                 self.fail("expected typed repair outcome")
             self.assertEqual([stage.name for stage in outcome.stages], ["terminate", "new", "official"])
-            self.assertIsInstance(outcome.stages[0].payload, core.SessionStageData)
-            self.assertIsInstance(outcome.stages[2].payload, core.OfficialRepairStageData)
+            self.assertIsInstance(outcome.stages[0].payload, repair_module.SessionStageData)
+            self.assertIsInstance(outcome.stages[2].payload, repair_module.OfficialRepairStageData)
             self.assertEqual(result.details.get("official_break_reason"), "healthy")
             self.assertEqual(result.details.get("reason"), "anomaly_guard")
 
     def test_timeout_never_runs_ai(self) -> None:
         cfg = self._cfg()
         store = core.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(core, "_collect_context", return_value={}), patch.object(
-            core, "_run_session_command_stage", return_value=[]
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core,
+            repair_module,
             "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
         ), patch.object(
-            core, "_ask_user_enable_ai", return_value={"asked": True, "decision": "timeout"}
+            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "timeout"}
         ), patch.object(
-            core, "_run_ai_repair"
+            repair_module, "_run_ai_repair"
         ) as ai_mock, patch.object(
-            core, "_notify_send", return_value={"sent": True}
+            repair_module, "_notify_send", return_value={"sent": True}
         ):
             result = core.attempt_repair(cfg, store, force=True, reason=None)
             self.assertFalse(result.used_ai)
@@ -1061,23 +1071,23 @@ class TestRepairFlow(unittest.TestCase):
             ai=core.AiConfig(enabled=False, allow_code_changes=False),
         )
         store = core.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(core, "_collect_context", return_value={}), patch.object(
-            core, "_run_session_command_stage", return_value=[]
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core,
+            repair_module,
             "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
         ), patch.object(
-            core, "_ask_user_enable_ai"
+            repair_module, "_ask_user_enable_ai"
         ) as ask_mock, patch.object(
-            core, "_run_ai_repair"
+            repair_module, "_run_ai_repair"
         ) as ai_mock, patch.object(
-            core, "_notify_send"
+            repair_module, "_notify_send"
         ) as notify_mock:
             result = core.attempt_repair(cfg, store, force=True, reason=None)
             self.assertFalse(result.used_ai)
@@ -1092,23 +1102,23 @@ class TestRepairFlow(unittest.TestCase):
             ai=core.AiConfig(enabled=True, allow_code_changes=False, max_attempts_per_day=0),
         )
         store = core.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(core, "_collect_context", return_value={}), patch.object(
-            core, "_run_session_command_stage", return_value=[]
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core,
+            repair_module,
             "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
         ), patch.object(
-            core, "_ask_user_enable_ai"
+            repair_module, "_ask_user_enable_ai"
         ) as ask_mock, patch.object(
-            core, "_run_ai_repair"
+            repair_module, "_run_ai_repair"
         ) as ai_mock, patch.object(
-            core, "_notify_send", return_value={"sent": True}
+            repair_module, "_notify_send", return_value={"sent": True}
         ):
             result = core.attempt_repair(cfg, store, force=True, reason=None)
             self.assertFalse(result.used_ai)
@@ -1132,8 +1142,8 @@ class TestRepairFlow(unittest.TestCase):
             ),
             logs_probe=core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="l", stderr=""),
         )
-        before = core._collect_context(evaluation, attempt_dir, stage_name="before")
-        after = core._collect_context(evaluation, attempt_dir, stage_name="after_official")
+        before = repair_module._collect_context(evaluation, attempt_dir, stage_name="before")
+        after = repair_module._collect_context(evaluation, attempt_dir, stage_name="after_official")
         self.assertNotEqual(before["logs"]["stdout_path"], after["logs"]["stdout_path"])
         self.assertTrue(Path(before["logs"]["stdout_path"]).exists())
         self.assertTrue(Path(after["logs"]["stdout_path"]).exists())
@@ -1145,9 +1155,9 @@ class TestRepairFlow(unittest.TestCase):
                 log_file=Path(tempfile.mkdtemp()) / "fix-my-claw.log",
             )
         )
-        with patch.object(core.time, "strftime", return_value="20260306-220000"):
-            first = core._attempt_dir(cfg)
-            second = core._attempt_dir(cfg)
+        with patch.object(repair_module.time, "strftime", return_value="20260306-220000"):
+            first = repair_module._attempt_dir(cfg)
+            second = repair_module._attempt_dir(cfg)
         self.assertNotEqual(first, second)
         self.assertTrue(first.exists())
         self.assertTrue(second.exists())
@@ -1161,8 +1171,8 @@ class TestRepairFlow(unittest.TestCase):
             )
         )
         store = core.StateStore(state_dir)
-        with patch.object(core, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)), patch.object(
-            core, "_attempt_dir", side_effect=RuntimeError("boom")
+        with patch.object(repair_module, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)), patch.object(
+            repair_module, "_attempt_dir", side_effect=RuntimeError("boom")
         ):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 core.attempt_repair(cfg, store, force=False, reason=None)
@@ -1171,12 +1181,12 @@ class TestRepairFlow(unittest.TestCase):
     def test_run_official_steps_skips_empty_step_at_runtime(self) -> None:
         cfg = core.AppConfig(repair=core.RepairConfig(official_steps=[[], ["openclaw", "gateway", "restart"]]))
         attempt_dir = Path(tempfile.mkdtemp())
-        with patch.object(core, "run_cmd", return_value=self._cmd_ok()) as run_cmd_mock, patch.object(
-            core, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)
+        with patch.object(repair_module, "run_cmd", return_value=self._cmd_ok()) as run_cmd_mock, patch.object(
+            repair_module, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)
         ), patch.object(
-            core.time, "sleep", return_value=None
+            repair_module.time, "sleep", return_value=None
         ):
-            out, final_evaluation, break_reason = core._run_official_steps(cfg, attempt_dir, break_on_healthy=False)
+            out, final_evaluation, break_reason = repair_module._run_official_steps(cfg, attempt_dir, break_on_healthy=False)
             self.assertEqual(len(out), 1)
             self.assertFalse(final_evaluation.effective_healthy)
             self.assertEqual(break_reason, "steps_exhausted")
@@ -1190,7 +1200,7 @@ class TestRepairFlow(unittest.TestCase):
         )
         store = core.StateStore(Path(tempfile.mkdtemp()))
         with patch.object(
-            core,
+            repair_module,
             "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(
@@ -1201,15 +1211,15 @@ class TestRepairFlow(unittest.TestCase):
                 ),
             ],
         ), patch.object(
-            core, "_collect_context", return_value={}
+            repair_module, "_collect_context", return_value={}
         ), patch.object(
-            core, "_run_session_command_stage", return_value=[]
+            repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
-            core,
+            repair_module,
             "_run_official_steps",
             return_value=_make_official_steps_result(effective_healthy=True, break_reason="healthy"),
         ) as official_mock, patch.object(
-            core, "_notify_send", return_value={"sent": True}
+            repair_module, "_notify_send", return_value={"sent": True}
         ):
             result = core.attempt_repair(cfg, store, force=True, reason=None)
             self.assertTrue(result.attempted)
@@ -1219,9 +1229,9 @@ class TestRepairFlow(unittest.TestCase):
     def test_run_ai_repair_writes_stage_scoped_logs(self) -> None:
         cfg = core.AppConfig()
         attempt_dir = Path(tempfile.mkdtemp())
-        with patch.object(core, "run_cmd", return_value=self._cmd_ok()):
-            core._run_ai_repair(cfg, attempt_dir, code_stage=False)
-            core._run_ai_repair(cfg, attempt_dir, code_stage=True)
+        with patch.object(repair_module, "run_cmd", return_value=self._cmd_ok()):
+            repair_module._run_ai_repair(cfg, attempt_dir, code_stage=False)
+            repair_module._run_ai_repair(cfg, attempt_dir, code_stage=True)
         self.assertTrue((attempt_dir / "ai.config.stdout.txt").exists())
         self.assertTrue((attempt_dir / "ai.code.stdout.txt").exists())
 
@@ -1247,10 +1257,10 @@ class TestRepairFlow(unittest.TestCase):
                 "deliveryContext": "non-dict-still-should-not-block",
             }
         ]
-        with patch.object(core, "_list_active_sessions", return_value=sessions), patch.object(
-            core, "run_cmd", return_value=self._cmd_ok()
+        with patch.object(repair_module, "_list_active_sessions", return_value=sessions), patch.object(
+            repair_module, "run_cmd", return_value=self._cmd_ok()
         ) as run_cmd_mock:
-            out = core._run_session_command_stage(
+            out = repair_module._run_session_command_stage(
                 cfg,
                 attempt_dir,
                 stage_name="terminate",
@@ -1266,21 +1276,21 @@ class TestRepairFlow(unittest.TestCase):
             ai=core.AiConfig(enabled=False, allow_code_changes=False),
         )
         store = core.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(core, "_collect_context", return_value={}), patch.object(
-            core, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
         ), patch.object(
-            core, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
         ), patch.object(
-            core,
+            repair_module,
             "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
         ), patch.object(
-            core, "_notify_send", return_value={"sent": True}
+            repair_module, "_notify_send", return_value={"sent": True}
         ), patch.object(
-            core.time, "sleep", return_value=None
+            repair_module.time, "sleep", return_value=None
         ) as sleep_mock:
             core.attempt_repair(cfg, store, force=True, reason=None)
             sleep_mock.assert_called_once_with(2)
@@ -1313,10 +1323,10 @@ class TestHealthDetailsAndLogging(unittest.TestCase):
             ),
             json_data={},
         )
-        with patch.object(core, "probe_health", return_value=failed_probe), patch.object(
-            core, "probe_status", return_value=ok_probe
+        with patch.object(repair_module, "probe_health", return_value=failed_probe), patch.object(
+            repair_module, "probe_status", return_value=ok_probe
         ):
-            evaluation = core._evaluate_health(cfg)
+            evaluation = repair_module._evaluate_health(cfg)
             self.assertFalse(evaluation.effective_healthy)
             self.assertFalse(evaluation.probe_healthy)
             self.assertEqual(evaluation.reason, "probe_failed")
@@ -1341,7 +1351,7 @@ class TestFileLockSafety(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             lock_path = Path(td) / "fix-my-claw.lock"
             lock_path.touch()
-            lock = core.FileLock(lock_path)
+            lock = state_module.FileLock(lock_path)
             self.assertFalse(lock._try_break_stale_lock())
             self.assertTrue(lock_path.exists())
 
@@ -1349,9 +1359,9 @@ class TestFileLockSafety(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             lock_path = Path(td) / "fix-my-claw.lock"
             lock_path.touch()
-            stale_ts = os.path.getmtime(lock_path) - (core.LOCK_INITIALIZING_GRACE_SECONDS + 1)
+            stale_ts = os.path.getmtime(lock_path) - (state_module.LOCK_INITIALIZING_GRACE_SECONDS + 1)
             os.utime(lock_path, (stale_ts, stale_ts))
-            lock = core.FileLock(lock_path)
+            lock = state_module.FileLock(lock_path)
             self.assertTrue(lock._try_break_stale_lock())
             self.assertFalse(lock_path.exists())
 
@@ -1359,8 +1369,8 @@ class TestFileLockSafety(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             lock_path = Path(td) / "fix-my-claw.lock"
             lock_path.write_text("12345", encoding="utf-8")
-            lock = core.FileLock(lock_path)
-            with patch.object(core.os, "kill", side_effect=PermissionError):
+            lock = state_module.FileLock(lock_path)
+            with patch.object(state_module.os, "kill", side_effect=PermissionError):
                 self.assertFalse(lock._try_break_stale_lock())
             self.assertTrue(lock_path.exists())
 
@@ -1368,9 +1378,9 @@ class TestFileLockSafety(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             lock_path = Path(td) / "fix-my-claw.lock"
             lock_path.touch()
-            stale_ts = os.path.getmtime(lock_path) - (core.LOCK_INITIALIZING_GRACE_SECONDS + 1)
+            stale_ts = os.path.getmtime(lock_path) - (state_module.LOCK_INITIALIZING_GRACE_SECONDS + 1)
             os.utime(lock_path, (stale_ts, stale_ts))
-            lock = core.FileLock(lock_path)
+            lock = state_module.FileLock(lock_path)
             original_unlink_if_same_lock = lock._unlink_if_same_lock
 
             def _replace_lock(expected_signature: tuple[int, int] | None) -> bool:
@@ -1473,10 +1483,10 @@ class TestMonitorLoop(unittest.TestCase):
                 details={"attempt_dir": str(Path(td) / "attempt-1")},
             )
 
-            with patch.object(core, "run_check", return_value=evaluation), patch.object(
-                core, "attempt_repair", return_value=repair_result
+            with patch.object(monitor, "run_check", return_value=evaluation), patch.object(
+                monitor, "attempt_repair", return_value=repair_result
             ) as attempt_repair_mock, patch.object(
-                core.time, "sleep", side_effect=StopLoop
+                monitor.time, "sleep", side_effect=StopLoop
             ):
                 with self.assertRaises(StopLoop):
                     core.monitor_loop(cfg, store)

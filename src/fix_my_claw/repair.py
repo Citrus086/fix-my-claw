@@ -4,7 +4,6 @@ import json
 import logging
 import re
 import shutil
-import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -20,22 +19,6 @@ from .runtime import CmdResult, run_cmd
 from .shared import _parse_json_maybe, ensure_dir, redact_text, truncate_for_log
 from .state import StateStore, _now_ts
 
-
-def _core_override(name: str, local: Any) -> Any | None:
-    core_module = sys.modules.get("fix_my_claw.core")
-    if core_module is None:
-        return None
-    override = getattr(core_module, name, None)
-    if override is None or override is local:
-        return None
-    return override
-
-
-def _dispatch(name: str, local: Any, *args: Any, **kwargs: Any) -> Any:
-    override = _core_override(name, local)
-    if override is not None:
-        return override(*args, **kwargs)
-    return local(*args, **kwargs)
 
 def _parse_agent_id_from_session_key(key: str) -> str | None:
     match = re.match(r"^agent:([^:]+):", key or "")
@@ -54,7 +37,7 @@ def _list_active_sessions(cfg: AppConfig, *, active_minutes: int) -> list[dict[s
         "--json",
     ]
     cwd = cfg.openclaw.workspace_dir if cfg.openclaw.workspace_dir.exists() else None
-    res = _dispatch("run_cmd", run_cmd, argv, timeout_seconds=max(15, cfg.monitor.probe_timeout_seconds), cwd=cwd)
+    res = run_cmd(argv, timeout_seconds=max(15, cfg.monitor.probe_timeout_seconds), cwd=cwd)
     data = _parse_json_maybe(res.stdout)
     if not res.ok or not isinstance(data, dict):
         return []
@@ -82,7 +65,7 @@ def _backup_openclaw_state(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
         base_dir=src.name,
     )
     out = {"source": str(src), "archive": archive_path}
-    _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, "backup.json", json.dumps(out, ensure_ascii=False, indent=2))
+    _write_attempt_file(attempt_dir, "backup.json", json.dumps(out, ensure_ascii=False, indent=2))
     return out
 
 
@@ -97,15 +80,11 @@ def _run_session_command_stage(
     results: list[dict[str, Any]] = []
     if not cfg.repair.session_control_enabled or not message_text.strip():
         return results
-    sessions = _dispatch("_list_active_sessions", _list_active_sessions, cfg, active_minutes=cfg.repair.session_active_minutes)
+    sessions = _list_active_sessions(cfg, active_minutes=cfg.repair.session_active_minutes)
     allow_agents = set(cfg.repair.session_agents)
     for session in sessions:
         key = str(session.get("key", ""))
-        agent_id = _dispatch(
-            "_parse_agent_id_from_session_key",
-            _parse_agent_id_from_session_key,
-            key,
-        ) or str(session.get("agentId", ""))
+        agent_id = _parse_agent_id_from_session_key(key) or str(session.get("agentId", ""))
         if not agent_id or agent_id not in allow_agents:
             continue
         session_id = str(session.get("sessionId", "")).strip()
@@ -122,15 +101,15 @@ def _run_session_command_stage(
             message_text,
         ]
         cwd = cfg.openclaw.workspace_dir if cfg.openclaw.workspace_dir.exists() else None
-        res = _dispatch("run_cmd", run_cmd, argv, timeout_seconds=cfg.repair.session_command_timeout_seconds, cwd=cwd)
+        res = run_cmd(argv, timeout_seconds=cfg.repair.session_command_timeout_seconds, cwd=cwd)
         repair_log.warning(
             "%s stage: agent=%s session=%s exit=%s", stage_name, agent_id, session_id, res.exit_code
         )
         idx = len(results) + 1
         stdout_name = f"{stage_name}.{idx}.stdout.txt"
         stderr_name = f"{stage_name}.{idx}.stderr.txt"
-        _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, stdout_name, redact_text(res.stdout))
-        _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, stderr_name, redact_text(res.stderr))
+        _write_attempt_file(attempt_dir, stdout_name, redact_text(res.stdout))
+        _write_attempt_file(attempt_dir, stderr_name, redact_text(res.stderr))
         results.append(
             {
                 "agent": agent_id,
@@ -169,15 +148,13 @@ def _evaluate_with_context(
     stage_name: str,
     log_probe_failures: bool = False,
 ) -> tuple[HealthEvaluation, dict]:
-    evaluation = _dispatch(
-        "_evaluate_health",
-        _evaluate_health,
+    evaluation = _evaluate_health(
         cfg,
         log_probe_failures=log_probe_failures,
         capture_logs=True,
-        logs_timeout_seconds=_dispatch("_context_logs_timeout_seconds", _context_logs_timeout_seconds, cfg),
+        logs_timeout_seconds=_context_logs_timeout_seconds(cfg),
     )
-    context = _dispatch("_collect_context", _collect_context, evaluation, attempt_dir, stage_name=stage_name)
+    context = _collect_context(evaluation, attempt_dir, stage_name=stage_name)
     return evaluation, context
 
 
@@ -190,13 +167,13 @@ def _collect_context(evaluation: HealthEvaluation, attempt_dir: Path, *, stage_n
     status_stderr = f"{prefix}.status.stderr.txt"
     logs_file = f"{prefix}.openclaw.logs.txt" if logs is not None else None
 
-    _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, health_stdout, redact_text(evaluation.health_probe.cmd.stdout))
-    _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, health_stderr, redact_text(evaluation.health_probe.cmd.stderr))
-    _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, status_stdout, redact_text(evaluation.status_probe.cmd.stdout))
-    _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, status_stderr, redact_text(evaluation.status_probe.cmd.stderr))
+    _write_attempt_file(attempt_dir, health_stdout, redact_text(evaluation.health_probe.cmd.stdout))
+    _write_attempt_file(attempt_dir, health_stderr, redact_text(evaluation.health_probe.cmd.stderr))
+    _write_attempt_file(attempt_dir, status_stdout, redact_text(evaluation.status_probe.cmd.stdout))
+    _write_attempt_file(attempt_dir, status_stderr, redact_text(evaluation.status_probe.cmd.stderr))
     if logs is not None and logs_file is not None:
         logs_text = logs.stdout + ("\n" + logs.stderr if logs.stderr else "")
-        _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, logs_file, redact_text(logs_text))
+        _write_attempt_file(attempt_dir, logs_file, redact_text(logs_text))
 
     return {
         "healthy": evaluation.effective_healthy,
@@ -226,8 +203,8 @@ def _evaluate_health(
     capture_logs: bool = False,
     logs_timeout_seconds: int | None = None,
 ) -> HealthEvaluation:
-    health = _dispatch("probe_health", probe_health, cfg, log_on_fail=log_probe_failures)
-    status = _dispatch("probe_status", probe_status, cfg, log_on_fail=log_probe_failures)
+    health = probe_health(cfg, log_on_fail=log_probe_failures)
+    status = probe_status(cfg, log_on_fail=log_probe_failures)
     probe_healthy = health.ok and status.ok
     effective_healthy = probe_healthy
     reason: str | None = None
@@ -235,9 +212,7 @@ def _evaluate_health(
     anomaly_guard: dict | None = None
     should_collect_logs = capture_logs or (probe_healthy and cfg.anomaly_guard.enabled)
     if should_collect_logs:
-        logs_probe = _dispatch(
-            "probe_logs",
-            probe_logs,
+        logs_probe = probe_logs(
             cfg,
             timeout_seconds=logs_timeout_seconds or cfg.anomaly_guard.probe_timeout_seconds,
         )
@@ -246,7 +221,7 @@ def _evaluate_health(
     elif cfg.anomaly_guard.enabled:
         if logs_probe is None:
             raise RuntimeError("anomaly guard requires a logs probe")
-        anomaly_guard = _dispatch("_analyze_anomaly_guard", _analyze_anomaly_guard, cfg, logs=logs_probe)
+        anomaly_guard = _analyze_anomaly_guard(cfg, logs=logs_probe)
         if anomaly_guard.get("triggered"):
             effective_healthy = False
             reason = "anomaly_guard"
@@ -278,7 +253,7 @@ def _run_official_steps(
         argv = [cfg.openclaw.command if step[0] == "openclaw" else step[0], *step[1:]]
         repair_log.warning("official step %d/%d: %s", idx, total, " ".join(argv))
         cwd = cfg.openclaw.workspace_dir if cfg.openclaw.workspace_dir.exists() else None
-        res = _dispatch("run_cmd", run_cmd, argv, timeout_seconds=cfg.repair.step_timeout_seconds, cwd=cwd)
+        res = run_cmd(argv, timeout_seconds=cfg.repair.step_timeout_seconds, cwd=cwd)
         repair_log.warning(
             "official step %d/%d done: exit=%s duration_ms=%s",
             idx,
@@ -290,8 +265,8 @@ def _run_official_steps(
             repair_log.info("official step %d/%d stderr: %s", idx, total, truncate_for_log(res.stderr))
         stdout_name = f"official.{idx}.stdout.txt"
         stderr_name = f"official.{idx}.stderr.txt"
-        _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, stdout_name, redact_text(res.stdout))
-        _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, stderr_name, redact_text(res.stderr))
+        _write_attempt_file(attempt_dir, stdout_name, redact_text(res.stdout))
+        _write_attempt_file(attempt_dir, stderr_name, redact_text(res.stderr))
         results.append(
             {
                 "argv": res.argv,
@@ -302,13 +277,11 @@ def _run_official_steps(
             }
         )
         time.sleep(cfg.repair.post_step_wait_seconds)
-        last_evaluation = _dispatch(
-            "_evaluate_health",
-            _evaluate_health,
+        last_evaluation = _evaluate_health(
             cfg,
             log_probe_failures=False,
             capture_logs=True,
-            logs_timeout_seconds=_dispatch("_context_logs_timeout_seconds", _context_logs_timeout_seconds, cfg),
+            logs_timeout_seconds=_context_logs_timeout_seconds(cfg),
         )
         break_reason = "steps_exhausted"
         if break_on_healthy and last_evaluation.effective_healthy:
@@ -316,13 +289,11 @@ def _run_official_steps(
             repair_log.warning("OpenClaw is healthy after official step %d/%d", idx, total)
             break
     if last_evaluation is None:
-        last_evaluation = _dispatch(
-            "_evaluate_health",
-            _evaluate_health,
+        last_evaluation = _evaluate_health(
             cfg,
             log_probe_failures=False,
             capture_logs=True,
-            logs_timeout_seconds=_dispatch("_context_logs_timeout_seconds", _context_logs_timeout_seconds, cfg),
+            logs_timeout_seconds=_context_logs_timeout_seconds(cfg),
         )
     return results, last_evaluation, break_reason
 
@@ -350,7 +321,7 @@ def _build_ai_cmd(cfg: AppConfig, *, code_stage: bool) -> list[str]:
 
 def _run_ai_repair(cfg: AppConfig, attempt_dir: Path, *, code_stage: bool) -> CmdResult:
     prompt_name = "repair_code.md" if code_stage else "repair.md"
-    prompt = Template(_dispatch("_load_prompt_text", _load_prompt_text, prompt_name)).safe_substitute(
+    prompt = Template(_load_prompt_text(prompt_name)).safe_substitute(
         {
             "attempt_dir": str(attempt_dir.resolve()),
             "workspace_dir": str(cfg.openclaw.workspace_dir),
@@ -362,22 +333,20 @@ def _run_ai_repair(cfg: AppConfig, attempt_dir: Path, *, code_stage: bool) -> Cm
         }
     )
 
-    argv = _dispatch("_build_ai_cmd", _build_ai_cmd, cfg, code_stage=code_stage)
+    argv = _build_ai_cmd(cfg, code_stage=code_stage)
     logging.getLogger("fix_my_claw.repair").warning(
         "AI repair (%s) starting: %s", "code" if code_stage else "config", argv
     )
-    res = _dispatch(
-        "run_cmd",
-        run_cmd,
+    res = run_cmd(
         argv,
         timeout_seconds=cfg.ai.timeout_seconds,
         cwd=cfg.openclaw.workspace_dir if cfg.openclaw.workspace_dir.exists() else None,
         stdin_text=prompt,
     )
     stage_name = "code" if code_stage else "config"
-    _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, f"ai.{stage_name}.argv.txt", " ".join(argv))
-    _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, f"ai.{stage_name}.stdout.txt", redact_text(res.stdout))
-    _dispatch("_write_attempt_file", _write_attempt_file, attempt_dir, f"ai.{stage_name}.stderr.txt", redact_text(res.stderr))
+    _write_attempt_file(attempt_dir, f"ai.{stage_name}.argv.txt", " ".join(argv))
+    _write_attempt_file(attempt_dir, f"ai.{stage_name}.stdout.txt", redact_text(res.stdout))
+    _write_attempt_file(attempt_dir, f"ai.{stage_name}.stderr.txt", redact_text(res.stderr))
     logging.getLogger("fix_my_claw.repair").warning("AI repair done: exit=%s", res.exit_code)
     if res.stderr:
         logging.getLogger("fix_my_claw.repair").warning("AI stderr: %s", truncate_for_log(res.stderr))
@@ -652,9 +621,7 @@ def _require_stage_payload(stage: StageResult, expected_type: type[Any]) -> Any:
 class SessionTerminateStage:
     def run(self, ctx: RepairPipelineContext) -> StageResult:
         commands = _coerce_execution_records(
-            _dispatch(
-                "_run_session_command_stage",
-                _run_session_command_stage,
+            _run_session_command_stage(
                 ctx.cfg,
                 ctx.attempt_dir,
                 stage_name="terminate",
@@ -678,9 +645,7 @@ class SessionResetStage:
                 time.sleep(ctx.cfg.repair.session_stage_wait_seconds)
                 waited_before_seconds = ctx.cfg.repair.session_stage_wait_seconds
         commands = _coerce_execution_records(
-            _dispatch(
-                "_run_session_command_stage",
-                _run_session_command_stage,
+            _run_session_command_stage(
                 ctx.cfg,
                 ctx.attempt_dir,
                 stage_name="new",
@@ -701,9 +666,7 @@ class SessionResetStage:
 @dataclass(frozen=True)
 class OfficialRepairStage:
     def run(self, ctx: RepairPipelineContext) -> StageResult:
-        steps, evaluation, break_reason = _dispatch(
-            "_run_official_steps",
-            _run_official_steps,
+        steps, evaluation, break_reason = _run_official_steps(
             ctx.cfg,
             ctx.attempt_dir,
             break_on_healthy=True,
@@ -716,7 +679,7 @@ class OfficialRepairStage:
                 break_reason=break_reason,
             ),
             evaluation=evaluation,
-            context=_dispatch("_collect_context", _collect_context, evaluation, ctx.attempt_dir, stage_name="after_official"),
+            context=_collect_context(evaluation, ctx.attempt_dir, stage_name="after_official"),
             stop_reason=break_reason,
         )
 
@@ -726,12 +689,7 @@ class AiDecisionStage:
     preset: dict[str, Any] | None = None
 
     def run(self, ctx: RepairPipelineContext) -> StageResult:
-        decision = self.preset if self.preset is not None else _dispatch(
-            "_ask_user_enable_ai",
-            _ask_user_enable_ai,
-            ctx.cfg,
-            ctx.attempt_dir,
-        )
+        decision = self.preset if self.preset is not None else _ask_user_enable_ai(ctx.cfg, ctx.attempt_dir)
         return StageResult(
             name="ai_decision",
             status="completed",
@@ -743,9 +701,7 @@ class AiDecisionStage:
 class BackupStage:
     def run(self, ctx: RepairPipelineContext) -> StageResult:
         try:
-            artifact = BackupArtifact.from_mapping(
-                _dispatch("_backup_openclaw_state", _backup_openclaw_state, ctx.cfg, ctx.attempt_dir)
-            )
+            artifact = BackupArtifact.from_mapping(_backup_openclaw_state(ctx.cfg, ctx.attempt_dir))
         except Exception as exc:
             return StageResult(
                 name="backup",
@@ -757,9 +713,7 @@ class BackupStage:
             name="backup",
             status="completed",
             payload=artifact,
-            notification=_dispatch(
-                "_notify_send",
-                _notify_send,
+            notification=_notify_send(
                 ctx.cfg,
                 f"fix-my-claw: 已完成备份，开始 Codex 修复。备份文件：{artifact.archive}",
                 silent=False,
@@ -772,11 +726,9 @@ class AiRepairStage:
     code_stage: bool
 
     def run(self, ctx: RepairPipelineContext) -> StageResult:
-        result = _dispatch("_run_ai_repair", _run_ai_repair, ctx.cfg, ctx.attempt_dir, code_stage=self.code_stage)
+        result = _run_ai_repair(ctx.cfg, ctx.attempt_dir, code_stage=self.code_stage)
         stage_suffix = "code" if self.code_stage else "config"
-        evaluation, context = _dispatch(
-            "_evaluate_with_context",
-            _evaluate_with_context,
+        evaluation, context = _evaluate_with_context(
             ctx.cfg,
             ctx.attempt_dir,
             stage_name=f"after_ai_{stage_suffix}",
@@ -796,9 +748,7 @@ class FinalAssessmentStage:
     stage_name: str
 
     def run(self, ctx: RepairPipelineContext) -> StageResult:
-        evaluation, context = _dispatch(
-            "_evaluate_with_context",
-            _evaluate_with_context,
+        evaluation, context = _evaluate_with_context(
             ctx.cfg,
             ctx.attempt_dir,
             stage_name=self.stage_name,
@@ -828,13 +778,11 @@ def attempt_repair(
     reason: str | None = None,
 ) -> RepairResult:
     repair_log = logging.getLogger("fix_my_claw.repair")
-    initial_evaluation = _dispatch(
-        "_evaluate_health",
-        _evaluate_health,
+    initial_evaluation = _evaluate_health(
         cfg,
         log_probe_failures=False,
         capture_logs=True,
-        logs_timeout_seconds=_dispatch("_context_logs_timeout_seconds", _context_logs_timeout_seconds, cfg),
+        logs_timeout_seconds=_context_logs_timeout_seconds(cfg),
     )
     if initial_evaluation.effective_healthy:
         repair_log.info("repair skipped: already healthy")
@@ -856,29 +804,25 @@ def attempt_repair(
             repair_log.info("repair skipped: cooldown")
         return RepairResult(attempted=False, fixed=False, used_ai=False, details_data=details)
 
-    attempt_dir = _dispatch("_attempt_dir", _attempt_dir, cfg)
+    attempt_dir = _attempt_dir(cfg)
     store.mark_repair_attempt()
     ctx = RepairPipelineContext(cfg=cfg, store=store, attempt_dir=attempt_dir)
     outcome = RepairOutcome(attempt_dir=str(attempt_dir.resolve()), reason=reason)
     repair_log.warning("starting repair attempt: dir=%s", attempt_dir.resolve())
-    outcome.start_notification = _dispatch(
-        "_notify_send",
-        _notify_send,
+    outcome.start_notification = _notify_send(
         cfg,
         "fix-my-claw: 检测到异常，开始执行分层修复（命令终止 -> /new -> 官方结构修复）。",
         silent=False,
     )
 
-    outcome.before_context = _dispatch("_collect_context", _collect_context, initial_evaluation, attempt_dir, stage_name="before")
+    outcome.before_context = _collect_context(initial_evaluation, attempt_dir, stage_name="before")
     terminate_stage = outcome.add_stage(SessionTerminateStage().run(ctx))
     outcome.add_stage(SessionResetStage().run(ctx, previous_stage=terminate_stage))
     official_stage = outcome.add_stage(OfficialRepairStage().run(ctx))
 
     if official_stage.fixed:
         outcome.final_stage = official_stage
-        outcome.final_notification = _dispatch(
-            "_notify_send",
-            _notify_send,
+        outcome.final_notification = _notify_send(
             cfg,
             "fix-my-claw: 分层修复已完成，系统恢复健康，无需启用 Codex 修复。",
         )
@@ -889,9 +833,7 @@ def attempt_repair(
         repair_log.info("Codex-assisted remediation disabled; leaving OpenClaw unhealthy")
         final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_no_ai").run(ctx))
         outcome.final_stage = final_stage
-        outcome.final_notification = _dispatch(
-            "_notify_send",
-            _notify_send,
+        outcome.final_notification = _notify_send(
             cfg,
             "fix-my-claw: 官方修复后仍异常，且 ai.enabled=false，本轮不会发起 yes/no 与 Codex 修复，请人工介入。",
             silent=False,
@@ -905,9 +847,7 @@ def attempt_repair(
         outcome.add_stage(AiDecisionStage(preset={"asked": False, "decision": "rate_limited"}).run(ctx))
         final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_rate_limited").run(ctx))
         outcome.final_stage = final_stage
-        outcome.final_notification = _dispatch(
-            "_notify_send",
-            _notify_send,
+        outcome.final_notification = _notify_send(
             cfg,
             "fix-my-claw: Codex 修复被限流（每日次数或冷却期），本轮跳过。",
             silent=False,
@@ -919,9 +859,7 @@ def attempt_repair(
     if ai_decision.decision != "yes":
         final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_no_approval").run(ctx))
         outcome.final_stage = final_stage
-        outcome.final_notification = _dispatch(
-            "_notify_send",
-            _notify_send,
+        outcome.final_notification = _notify_send(
             cfg,
             "fix-my-claw: 未收到 yes（含 no/timeout/发送失败/多次无效回复），本轮不会启用 Codex 修复。",
             silent=False,
@@ -932,9 +870,7 @@ def attempt_repair(
     backup_artifact = _require_stage_payload(backup_stage, BackupArtifact)
     if backup_stage.status != "completed":
         outcome.final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_backup_error").run(ctx))
-        outcome.final_notification = _dispatch(
-            "_notify_send",
-            _notify_send,
+        outcome.final_notification = _notify_send(
             cfg,
             f"fix-my-claw: 收到 yes，但备份失败，已停止 Codex 修复。错误：{backup_artifact.error}",
             silent=False,
@@ -945,9 +881,7 @@ def attempt_repair(
     ai_config_stage = outcome.add_stage(AiRepairStage(code_stage=False).run(ctx))
     if ai_config_stage.fixed:
         outcome.final_stage = ai_config_stage
-        outcome.final_notification = _dispatch(
-            "_notify_send",
-            _notify_send,
+        outcome.final_notification = _notify_send(
             cfg,
             "fix-my-claw: Codex 配置阶段修复成功，系统恢复健康。",
             silent=False,
@@ -959,9 +893,7 @@ def attempt_repair(
         ai_code_stage = outcome.add_stage(AiRepairStage(code_stage=True).run(ctx))
         if ai_code_stage.fixed:
             outcome.final_stage = ai_code_stage
-            outcome.final_notification = _dispatch(
-                "_notify_send",
-                _notify_send,
+            outcome.final_notification = _notify_send(
                 cfg,
                 "fix-my-claw: Codex 代码阶段修复成功，系统恢复健康。",
                 silent=False,
@@ -971,9 +903,7 @@ def attempt_repair(
 
     final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final").run(ctx))
     outcome.final_stage = final_stage
-    outcome.final_notification = _dispatch(
-        "_notify_send",
-        _notify_send,
+    outcome.final_notification = _notify_send(
         cfg,
         "fix-my-claw: 本轮修复结束，但系统仍异常，请人工介入排查。",
         silent=False,
