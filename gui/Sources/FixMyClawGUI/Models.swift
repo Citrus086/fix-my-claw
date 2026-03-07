@@ -262,7 +262,7 @@ struct AnomalyGuardConfig: Codable {
 
 struct NotifyConfig: Codable {
     var channel: String = "discord"
-    var account: String = "orchestrator"
+    var account: String = "fix-my-claw"
     var target: String = ""
     var silent: Bool = true
     var sendTimeoutSeconds: Int = 20
@@ -371,6 +371,32 @@ struct CheckHistoryItem: Identifiable {
     let id = UUID()
     let timestamp: Date
     let result: CheckPayload
+}
+
+// MARK: - 修复历史记录
+
+struct RepairRecord: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let success: Bool
+    let stage: String  // "pause" | "official" | "ai_config" | "ai_code" | "failed"
+    let source: String // "auto" | "manual"
+    let attemptDir: String
+    
+    var stageDescription: String {
+        switch stage {
+        case "pause": return "PAUSE 恢复"
+        case "official": return "官方修复"
+        case "ai_config": return "AI 配置修复"
+        case "ai_code": return "AI 代码修复"
+        case "failed": return "修复失败"
+        default: return "未知"
+        }
+    }
+    
+    var icon: String {
+        return success ? "✅" : "❌"
+    }
 }
 
 // MARK: - CLI 错误

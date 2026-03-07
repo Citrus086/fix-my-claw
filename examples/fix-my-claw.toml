@@ -44,7 +44,7 @@ post_step_wait_seconds = 2
 [notify]
 # Optional operator notification + interactive yes/no for enabling Codex stage.
 channel = "discord"
-account = "orchestrator"
+account = "fix-my-claw"
 # Target format follows OpenClaw message CLI, e.g. "channel:<discord_channel_id>"
 target = "channel:1479011917367476347"
 silent = true

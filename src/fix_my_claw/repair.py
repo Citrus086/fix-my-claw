@@ -16,8 +16,66 @@ from .config import AppConfig
 from .health import HealthEvaluation, probe_health, probe_logs, probe_status
 from .notify import _ask_user_enable_ai, _notify_send
 from .runtime import CmdResult, run_cmd
-from .shared import _parse_json_maybe, _write_attempt_file, ensure_dir, redact_text, truncate_for_log
+from .shared import (
+    _parse_json_maybe,
+    _write_attempt_file,
+    clear_repair_progress,
+    ensure_dir,
+    redact_text,
+    truncate_for_log,
+    write_repair_progress,
+)
 from .state import StateStore, _now_ts
+
+
+# Notification level constants
+NOTIFY_LEVEL_ALL = "all"
+NOTIFY_LEVEL_IMPORTANT = "important"
+NOTIFY_LEVEL_CRITICAL = "critical"
+
+
+def _should_notify(cfg: AppConfig, level: str) -> bool:
+    """Check if a notification should be sent based on configured level.
+    
+    Args:
+        cfg: Application configuration
+        level: The notification level - "all", "important", or "critical"
+    
+    Returns:
+        True if the notification should be sent
+    """
+    configured_level = cfg.notify.level.strip().lower()
+    
+    if configured_level == NOTIFY_LEVEL_ALL:
+        return True
+    
+    if configured_level == NOTIFY_LEVEL_IMPORTANT:
+        # important: notify on important and critical
+        return level in {NOTIFY_LEVEL_IMPORTANT, NOTIFY_LEVEL_CRITICAL}
+    
+    if configured_level == NOTIFY_LEVEL_CRITICAL:
+        # critical: only notify on critical events
+        return level == NOTIFY_LEVEL_CRITICAL
+    
+    # Default to all if unknown level
+    return True
+
+
+def _notify_send_with_level(cfg: AppConfig, text: str, level: str, *, silent: bool | None = None) -> dict[str, Any] | None:
+    """Send notification if level permits.
+    
+    Args:
+        cfg: Application configuration
+        text: Notification text
+        level: Notification level - "all", "important", or "critical"
+        silent: Override silent setting
+    
+    Returns:
+        Notification result dict or None if not sent
+    """
+    if not _should_notify(cfg, level):
+        return None
+    return _notify_send(cfg, text, silent=silent)
 
 
 def _parse_agent_id_from_session_key(key: str) -> str | None:
@@ -641,9 +699,33 @@ def _require_stage_payload(stage: StageResult, expected_type: type[Any]) -> Any:
     return stage.payload
 
 
+def _ai_decision_source_label(decision: AiDecision) -> str:
+    source = str(decision.raw.get("source", "")).strip().lower()
+    if source == "gui":
+        return "GUI"
+    if source == "discord":
+        return "Discord"
+    return "用户"
+
+
+def _ai_decision_notification_text(decision: AiDecision) -> str | None:
+    source = _ai_decision_source_label(decision)
+    if decision.decision == "yes":
+        return f"fix-my-claw: 已收到 {source} 的 yes，开始备份并准备 Codex 修复。"
+    if decision.decision == "no":
+        return f"fix-my-claw: 已收到 {source} 的 no，本轮不会启用 Codex 修复。"
+    return None
+
+
 @dataclass(frozen=True)
 class SessionPauseStage:
     def run(self, ctx: RepairPipelineContext) -> StageResult:
+        write_repair_progress(
+            ctx.cfg.monitor.state_dir,
+            stage="pause",
+            status="running",
+            attempt_dir=str(ctx.attempt_dir.resolve()),
+        )
         commands = _coerce_execution_records(
             _run_session_command_stage(
                 ctx.cfg,
@@ -651,6 +733,12 @@ class SessionPauseStage:
                 stage_name="pause",
                 message_text=ctx.cfg.repair.pause_message,
             )
+        )
+        write_repair_progress(
+            ctx.cfg.monitor.state_dir,
+            stage="pause",
+            status="completed",
+            attempt_dir=str(ctx.attempt_dir.resolve()),
         )
         return StageResult(
             name="pause",
@@ -731,10 +819,22 @@ class SessionResetStage:
 @dataclass(frozen=True)
 class OfficialRepairStage:
     def run(self, ctx: RepairPipelineContext) -> StageResult:
+        write_repair_progress(
+            ctx.cfg.monitor.state_dir,
+            stage="official",
+            status="running",
+            attempt_dir=str(ctx.attempt_dir.resolve()),
+        )
         steps, evaluation, break_reason = _run_official_steps(
             ctx.cfg,
             ctx.attempt_dir,
             break_on_healthy=True,
+        )
+        write_repair_progress(
+            ctx.cfg.monitor.state_dir,
+            stage="official",
+            status="completed",
+            attempt_dir=str(ctx.attempt_dir.resolve()),
         )
         return StageResult(
             name="official",
@@ -754,50 +854,63 @@ class AiDecisionStage:
     preset: dict[str, Any] | None = None
 
     def run(self, ctx: RepairPipelineContext) -> StageResult:
-        # 检查是否有全局 GUI 标志文件（GUI 优先）
-        # 标志文件位置：state 目录下（与 attempt_dir 同级）
-        gui_flag_file = ctx.attempt_dir.parent.parent / "gui.ask.flag"
-        
-        if gui_flag_file.exists():
-            # GUI 标志存在，读取用户决定
-            try:
-                with open(gui_flag_file, 'r') as f:
-                    flag_data = json.load(f)
-                    decision = flag_data.get("decision", "no")
-                    # 读取成功后删除标志文件（避免影响后续修复）
-                    gui_flag_file.unlink()
-                return StageResult(
-                    name="ai_decision",
-                    status="completed",
-                    payload=AiDecision(asked=True, decision=decision),
-                )
-            except Exception as exc:
-                # 读取失败，记录错误后回退到 Discord 询问
-                logging.getLogger("fix_my_claw.repair").error(
-                    "Failed to read GUI flag: %s", exc
-                )
-        
-        # GUI 标志不存在，使用 Discord 询问（保持现有逻辑）
-        decision = _ask_user_enable_ai(ctx.cfg, ctx.attempt_dir)
+        write_repair_progress(
+            ctx.cfg.monitor.state_dir,
+            stage="ai_decision",
+            status="running",
+            attempt_dir=str(ctx.attempt_dir.resolve()),
+        )
+        decision = self.preset or _ask_user_enable_ai(ctx.cfg, ctx.attempt_dir)
+        payload = AiDecision.from_mapping(decision)
+        notification_text = _ai_decision_notification_text(payload)
+        write_repair_progress(
+            ctx.cfg.monitor.state_dir,
+            stage="ai_decision",
+            status="completed",
+            attempt_dir=str(ctx.attempt_dir.resolve()),
+        )
         return StageResult(
             name="ai_decision",
             status="completed",
-            payload=AiDecision.from_mapping(decision),
+            payload=payload,
+            notification=(
+                _notify_send(ctx.cfg, notification_text, silent=False)
+                if notification_text is not None
+                else None
+            ),
         )
 
 
 @dataclass(frozen=True)
 class BackupStage:
     def run(self, ctx: RepairPipelineContext) -> StageResult:
+        write_repair_progress(
+            ctx.cfg.monitor.state_dir,
+            stage="backup",
+            status="running",
+            attempt_dir=str(ctx.attempt_dir.resolve()),
+        )
         try:
             artifact = BackupArtifact.from_mapping(_backup_openclaw_state(ctx.cfg, ctx.attempt_dir))
         except Exception as exc:
+            write_repair_progress(
+                ctx.cfg.monitor.state_dir,
+                stage="backup",
+                status="failed",
+                attempt_dir=str(ctx.attempt_dir.resolve()),
+            )
             return StageResult(
                 name="backup",
                 status="failed",
                 payload=BackupArtifact(error=str(exc)),
                 stop_reason="backup_error",
             )
+        write_repair_progress(
+            ctx.cfg.monitor.state_dir,
+            stage="backup",
+            status="completed",
+            attempt_dir=str(ctx.attempt_dir.resolve()),
+        )
         return StageResult(
             name="backup",
             status="completed",
@@ -875,10 +988,12 @@ def attempt_repair(
     )
     if initial_evaluation.effective_healthy:
         repair_log.info("repair skipped: already healthy")
+        clear_repair_progress(cfg.monitor.state_dir)
         return RepairResult(attempted=False, fixed=True, used_ai=False, details_data={"already_healthy": True})
 
     if not cfg.repair.enabled:
         repair_log.warning("repair skipped: disabled by config")
+        clear_repair_progress(cfg.monitor.state_dir)
         return RepairResult(attempted=False, fixed=False, used_ai=False, details_data={"repair_disabled": True})
 
     if not store.can_attempt_repair(cfg.monitor.repair_cooldown_seconds, force=force):
@@ -891,6 +1006,7 @@ def attempt_repair(
             repair_log.info("repair skipped: cooldown (%ss remaining)", remaining)
         else:
             repair_log.info("repair skipped: cooldown")
+        clear_repair_progress(cfg.monitor.state_dir)
         return RepairResult(attempted=False, fixed=False, used_ai=False, details_data=details)
 
     attempt_dir = _attempt_dir(cfg)
@@ -898,6 +1014,14 @@ def attempt_repair(
     ctx = RepairPipelineContext(cfg=cfg, store=store, attempt_dir=attempt_dir)
     outcome = RepairOutcome(attempt_dir=str(attempt_dir.resolve()), reason=reason)
     repair_log.warning("starting repair attempt: dir=%s", attempt_dir.resolve())
+    
+    # 写入初始进度
+    write_repair_progress(
+        cfg.monitor.state_dir,
+        stage="starting",
+        status="running",
+        attempt_dir=str(attempt_dir.resolve()),
+    )
     outcome.start_notification = _notify_send(
         cfg,
         "fix-my-claw: 检测到异常，开始分层修复（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop -> /new -> 官方结构修复）。",
@@ -919,6 +1043,7 @@ def attempt_repair(
                         "fix-my-claw: 已发送 PAUSE 并完成复检，系统恢复健康，跳过 /stop、/new 与结构修复。",
                     )
                     repair_log.warning("recovered after soft pause: dir=%s", attempt_dir.resolve())
+                    clear_repair_progress(cfg.monitor.state_dir)
                     return _result_from_outcome(attempted=True, outcome=outcome)
     terminate_stage = outcome.add_stage(SessionTerminateStage().run(ctx))
     outcome.add_stage(SessionResetStage().run(ctx, previous_stage=terminate_stage))
@@ -931,6 +1056,7 @@ def attempt_repair(
             "fix-my-claw: 分层修复已完成，系统恢复健康，无需启用 Codex 修复。",
         )
         repair_log.warning("recovered by official steps: dir=%s", attempt_dir.resolve())
+        clear_repair_progress(cfg.monitor.state_dir)
         return _result_from_outcome(attempted=True, outcome=outcome)
 
     if not cfg.ai.enabled:
@@ -942,6 +1068,7 @@ def attempt_repair(
             "fix-my-claw: 官方修复后仍异常，且 ai.enabled=false，本轮不会发起 yes/no 与 Codex 修复，请人工介入。",
             silent=False,
         )
+        clear_repair_progress(cfg.monitor.state_dir)
         return _result_from_outcome(attempted=True, outcome=outcome)
 
     if not store.can_attempt_ai(
@@ -961,6 +1088,7 @@ def attempt_repair(
             "fix-my-claw: Codex 修复被限流（每日次数或冷却期），本轮跳过。",
             silent=False,
         )
+        clear_repair_progress(cfg.monitor.state_dir)
         return _result_from_outcome(attempted=True, outcome=outcome)
 
     ai_decision_stage = outcome.add_stage(AiDecisionStage().run(ctx))
@@ -968,11 +1096,15 @@ def attempt_repair(
     if ai_decision.decision != "yes":
         final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_no_approval").run(ctx))
         outcome.final_stage = final_stage
-        outcome.final_notification = _notify_send(
-            cfg,
-            "fix-my-claw: 未收到 yes（含 no/timeout/发送失败/多次无效回复），本轮不会启用 Codex 修复。",
-            silent=False,
-        )
+        if ai_decision_stage.notification is not None:
+            outcome.final_notification = ai_decision_stage.notification
+        else:
+            outcome.final_notification = _notify_send(
+                cfg,
+                "fix-my-claw: 未收到 yes（含 no/timeout/发送失败/多次无效回复），本轮不会启用 Codex 修复。",
+                silent=False,
+            )
+        clear_repair_progress(cfg.monitor.state_dir)
         return _result_from_outcome(attempted=True, outcome=outcome)
 
     backup_stage = outcome.add_stage(BackupStage().run(ctx))
@@ -984,6 +1116,7 @@ def attempt_repair(
             f"fix-my-claw: 收到 yes，但备份失败，已停止 Codex 修复。错误：{backup_artifact.error}",
             silent=False,
         )
+        clear_repair_progress(cfg.monitor.state_dir)
         return _result_from_outcome(attempted=True, outcome=outcome)
 
     store.mark_ai_attempt()
@@ -996,6 +1129,7 @@ def attempt_repair(
             silent=False,
         )
         repair_log.warning("recovered by Codex-assisted remediation: dir=%s", attempt_dir.resolve())
+        clear_repair_progress(cfg.monitor.state_dir)
         return _result_from_outcome(attempted=True, outcome=outcome)
 
     if cfg.ai.allow_code_changes:
@@ -1008,6 +1142,7 @@ def attempt_repair(
                 silent=False,
             )
             repair_log.warning("recovered by code-stage remediation: dir=%s", attempt_dir.resolve())
+            clear_repair_progress(cfg.monitor.state_dir)
             return _result_from_outcome(attempted=True, outcome=outcome)
 
     final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final").run(ctx))
@@ -1023,4 +1158,5 @@ def attempt_repair(
         outcome.used_ai,
         attempt_dir.resolve(),
     )
+    clear_repair_progress(cfg.monitor.state_dir)
     return _result_from_outcome(attempted=True, outcome=outcome)

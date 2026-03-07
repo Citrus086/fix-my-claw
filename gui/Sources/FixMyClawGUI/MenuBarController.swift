@@ -71,6 +71,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         manager.performRepair()
     }
 
+    @objc func showPendingApproval() {
+        manager.showPendingApprovalDialog()
+    }
+
     @objc func installService() {
         manager.installService()
     }

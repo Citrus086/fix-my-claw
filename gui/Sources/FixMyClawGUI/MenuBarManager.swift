@@ -1,6 +1,43 @@
 import AppKit
+import Darwin
 import SwiftUI
 import UserNotifications
+
+struct ApprovalRequest: Decodable {
+    let requestId: String
+    let prompt: String
+
+    enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+        case prompt
+    }
+}
+
+private struct RepairProgress: Decodable {
+    let stage: String
+    let status: String
+    let attemptDir: String?
+    let timestamp: Double
+
+    enum CodingKeys: String, CodingKey {
+        case stage
+        case status
+        case attemptDir = "attempt_dir"
+        case timestamp
+    }
+}
+
+private struct ApprovalDecision: Decodable {
+    let requestId: String
+    let decision: String
+    let source: String?
+
+    enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+        case decision
+        case source
+    }
+}
 
 @MainActor
 class MenuBarManager: ObservableObject {
@@ -12,15 +49,27 @@ class MenuBarManager: ObservableObject {
     @Published var lastError: String?
     @Published var statusPayload: StatusPayload?
     @Published var serviceStatus: ServiceStatus?
+    @Published var currentRepairStage: String?
+    @Published var pendingAiRequest: ApprovalRequest?
 
     let cli = CLIWrapper()
 
     private var statusTimer: Timer?
+    private var approvalTimer: Timer?
+    private var repairProgressTimer: Timer?
     private var lastCheckTime: Date?
+    private var activeApprovalDialogRequestID: String?
+    private var dismissedApprovalRequestIDs = Set<String>()
     private let hasShownWelcomeKey = "fixMyClawGUI.hasShownWelcome"
+    private let approvalActiveFileName = "ai_approval.active.json"
+    private let approvalDecisionFileName = "ai_approval.decision.json"
+    private let repairProgressFileName = "repair_progress.json"
 
     var statusTitle: String {
-        "\(state.icon) \(state.description)"
+        if let stage = currentRepairStage {
+            return "🟡 修复中...(\(stage))"
+        }
+        return "\(state.icon) \(state.description)"
     }
 
     var lastCheckText: String? {
@@ -119,25 +168,21 @@ class MenuBarManager: ObservableObject {
         guard !isLoading else { return }
 
         Task {
+            // 标记为忙碌，防止重入
             isLoading = true
-            defer { isLoading = false }
+            currentRepairStage = "starting"
 
-            // 显示 AI 修复询问对话框
-            let aiDecision = showAiRepairDialog()
-            
-            if aiDecision == "no" {
-                // 用户选择不启用 AI 修复
-                lastError = "用户取消了 AI 修复"
-                await refreshStatus()
-                return
-            }
-            
-            // 用户选择启用 AI 修复，创建 GUI 标志文件
-            let flagPath = await writeGuiAskFlag(decision: "yes")
-            lastError = nil
-            
+            // 发送启动通知（非阻塞）
+            let content = UNMutableNotificationContent()
+            content.title = "🔧 修复已启动"
+            content.body = "修复正在后台运行，请稍候..."
+            content.sound = .default
+            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            try? await UNUserNotificationCenter.current().add(request)
+
+            var serviceWasRunning = false
             do {
-                let serviceWasRunning = serviceStatus?.running == true
+                serviceWasRunning = serviceStatus?.running == true
                 if serviceWasRunning {
                     try await cli.stopService()
                 }
@@ -150,13 +195,25 @@ class MenuBarManager: ObservableObject {
 
                 await refreshStatus()
                 sendRepairNotification(result: result)
-                
-                // 修复完成后删除 GUI 标志文件
-                try? FileManager.default.removeItem(at: flagPath)
             } catch {
                 lastError = "修复失败: \(error.localizedDescription)"
+                // 确保服务被重新启动（如果之前是运行中的）
+                if serviceWasRunning {
+                    try? await cli.startService()
+                }
                 await refreshStatus()
+                // 发送失败通知
+                let errorContent = UNMutableNotificationContent()
+                errorContent.title = "❌ 修复失败"
+                errorContent.body = error.localizedDescription
+                errorContent.sound = .default
+                let errorRequest = UNNotificationRequest(identifier: UUID().uuidString, content: errorContent, trigger: nil)
+                try? await UNUserNotificationCenter.current().add(errorRequest)
             }
+
+            // 修复完成后清除状态
+            isLoading = false
+            currentRepairStage = nil
         }
     }
 
@@ -281,6 +338,12 @@ class MenuBarManager: ObservableObject {
         statusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { await self?.refreshStatus() }
         }
+        approvalTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { await self?.pollApprovalRequest() }
+        }
+        repairProgressTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { await self?.pollRepairProgress() }
+        }
     }
 
     private func showWelcomeDialog() {
@@ -342,29 +405,175 @@ class MenuBarManager: ObservableObject {
         }
 
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        Task {
+            try? await UNUserNotificationCenter.current().add(request)
+        }
     }
 
-    // MARK: - AI Repair Dialog Helper Methods
-    
-    private func showAiRepairDialog() -> String {
+    // MARK: - Repair Progress Polling
+
+    // 记录已发送过完成通知的阶段，避免重复发送
+    private var notifiedCompletionStages = Set<String>()
+
+    private func pollRepairProgress() async {
+        guard let progress = loadRepairProgress() else {
+            // 进度文件被删除表示整个修复流程已结束（后端调用了 clear_repair_progress）
+            if currentRepairStage != nil {
+                currentRepairStage = nil
+                // 清除已发送通知记录
+                notifiedCompletionStages.removeAll()
+            }
+            return
+        }
+
+        // 更新当前修复阶段显示
+        currentRepairStage = progress.stage
+
+        // 注意：后端在多个中间阶段会写 completed（如 pause、ai_decision、official 等）
+        // 只有进度文件被删除时才表示整个修复结束
+        // 这里我们只在阶段失败时发送通知，成功阶段的通知由 performRepair 统一处理
+        if progress.status == "failed" {
+            // 避免对同一阶段重复发送通知
+            let stageKey = "\(progress.stage):\(progress.status)"
+            if !notifiedCompletionStages.contains(stageKey) {
+                notifiedCompletionStages.insert(stageKey)
+                await sendRepairCompletedNotification(stage: progress.stage, success: false)
+            }
+        }
+    }
+
+    private func loadRepairProgress() -> RepairProgress? {
+        let url = approvalStateDirectoryURL().appendingPathComponent(repairProgressFileName)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(RepairProgress.self, from: data)
+    }
+
+    private func sendRepairCompletedNotification(stage: String, success: Bool) async {
+        let content = UNMutableNotificationContent()
+        if success {
+            content.title = "✅ 修复完成"
+            content.body = "系统修复成功（阶段：\(stage)）"
+        } else {
+            content.title = "⚠️ 修复未成功"
+            content.body = "系统修复失败，请人工介入（阶段：\(stage)）"
+        }
+        content.sound = .default
+
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    // MARK: - AI Approval Coordination
+
+    private func pollApprovalRequest() async {
+        // 如果已有弹窗显示中，跳过
+        guard activeApprovalDialogRequestID == nil else { return }
+
+        // 检查是否有新的审批请求
+        guard let request = loadApprovalRequest() else {
+            // 没有活跃请求时，清除 pendingAiRequest
+            if pendingAiRequest != nil {
+                pendingAiRequest = nil
+            }
+            return
+        }
+
+        // 检查是否已被用户关闭过
+        guard !dismissedApprovalRequestIDs.contains(request.requestId) else { return }
+
+        // 检查是否已有决策（可能来自 Discord 或其他来源）
+        if let decision = loadApprovalDecision(), decision.requestId == request.requestId {
+            // 请求已被其他来源处理，记录并清理
+            dismissedApprovalRequestIDs.insert(request.requestId)
+            pendingAiRequest = nil
+            return
+        }
+
+        // 如果当前 pendingAiRequest 与新请求不同，更新它
+        if pendingAiRequest?.requestId != request.requestId {
+            pendingAiRequest = request
+        }
+
+        // 2秒后自动弹窗，或者用户点击菜单项触发
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(2 * 1_000_000_000))
+            // 再次检查：是否已有弹窗、请求是否仍有效、是否已有决策
+            guard activeApprovalDialogRequestID == nil else { return }
+            guard let pending = pendingAiRequest, pending.requestId == request.requestId else { return }
+            // 检查是否在等待期间已被其他来源处理
+            if let decision = loadApprovalDecision(), decision.requestId == request.requestId {
+                pendingAiRequest = nil
+                dismissedApprovalRequestIDs.insert(request.requestId)
+                return
+            }
+            // 复查 active request 文件：后端 timeout/invalid-limit 会删除 active 文件但不写 decision
+            // 如果 active 文件已不存在或 request_id 不匹配，说明请求已过期
+            guard let currentActive = loadApprovalRequest(),
+                  currentActive.requestId == request.requestId else {
+                // 请求已过期，清理 pendingAiRequest
+                pendingAiRequest = nil
+                dismissedApprovalRequestIDs.insert(request.requestId)
+                return
+            }
+            presentApprovalDialog(for: request)
+        }
+    }
+
+    func showPendingApprovalDialog() {
+        // 如果已有弹窗显示中，跳过
+        guard activeApprovalDialogRequestID == nil else { return }
+        guard let request = pendingAiRequest else { return }
+        // 检查是否已有决策
+        if let decision = loadApprovalDecision(), decision.requestId == request.requestId {
+            pendingAiRequest = nil
+            dismissedApprovalRequestIDs.insert(request.requestId)
+            return
+        }
+        // 复查 active request 文件：后端 timeout/invalid-limit 会删除 active 文件但不写 decision
+        // 如果 active 文件已不存在或 request_id 不匹配，说明请求已过期
+        guard let currentActive = loadApprovalRequest(),
+              currentActive.requestId == request.requestId else {
+            // 请求已过期，清理 pendingAiRequest
+            pendingAiRequest = nil
+            dismissedApprovalRequestIDs.insert(request.requestId)
+            return
+        }
+        presentApprovalDialog(for: request)
+    }
+
+    private func presentApprovalDialog(for request: ApprovalRequest) {
+        // 先标记当前正在处理的请求，防止重复弹窗
+        activeApprovalDialogRequestID = request.requestId
+
+        NSApp.activate(ignoringOtherApps: true)
+        let decision = showAiRepairDialog(prompt: request.prompt)
+
+        // 记录已处理
+        dismissedApprovalRequestIDs.insert(request.requestId)
+
+        // 尝试写入决策
+        let claimed = claimApprovalDecision(request: request, decision: decision)
+        if !claimed, let existing = loadApprovalDecision(), existing.requestId == request.requestId {
+            print("[GUI] approval request \(request.requestId) already resolved by \(existing.source ?? "another source")")
+        }
+
+        // 清理状态
+        activeApprovalDialogRequestID = nil
+        pendingAiRequest = nil
+    }
+
+    private func showAiRepairDialog(prompt: String) -> String {
         let alert = NSAlert()
         alert.messageText = "AI 修复确认"
         alert.informativeText = """
-        fix-my-claw 检测到异常，是否启用 Codex 智能修复？
-        
-        AI 修复会使用 GPT-4o 分析问题并生成修复代码，可能会消耗 API 配额。
-        
-        选项：
-        • 启用修复（是/Yes）- 启用 Codex 修复，备份 OpenClaw 配置后自动执行
-        • 跳过修复（否/No）- 跳过 AI 修复，继续使用官方修复流程
-        
-        提示：你也可以通过 Discord 回复 yes/no 来确认修复。
+        \(prompt)
+
+        你也可以在 Discord 回复 yes/no。谁先提交有效决定，谁生效；另一侧选择会自动失效。
         """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "启用修复（是）")
         alert.addButton(withTitle: "跳过修复（否）")
-        
+
         let response = alert.runModal()
         switch response {
         case .alertFirstButtonReturn:
@@ -375,20 +584,71 @@ class MenuBarManager: ObservableObject {
             return "no"
         }
     }
-    
-    private func writeGuiAskFlag(decision: String) async -> URL {
-        // 使用固定的全局标志文件路径
-        let configPath = ConfigManager.shared.defaultConfigPath
-        let stateDir = (configPath as NSString).deletingLastPathComponent
-        let flagPath = URL(fileURLWithPath: stateDir + "/gui.ask.flag")
-        
-        // 写入标志文件
-        let flagData: [String: Any] = ["decision": decision, "timestamp": Date().timeIntervalSince1970]
-        if let data = try? JSONSerialization.data(withJSONObject: flagData, options: [.prettyPrinted]) {
-            try? data.write(to: flagPath)
+
+    private func approvalStateDirectoryURL() -> URL {
+        if let configured = ConfigManager.shared.config?.monitor.stateDir, !configured.isEmpty {
+            return URL(fileURLWithPath: (configured as NSString).expandingTildeInPath)
         }
-        
-        return flagPath
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".fix-my-claw")
+    }
+
+    private func loadApprovalRequest() -> ApprovalRequest? {
+        let url = approvalStateDirectoryURL().appendingPathComponent(approvalActiveFileName)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(ApprovalRequest.self, from: data)
+    }
+
+    private func loadApprovalDecision() -> ApprovalDecision? {
+        let url = approvalStateDirectoryURL().appendingPathComponent(approvalDecisionFileName)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(ApprovalDecision.self, from: data)
+    }
+
+    private func claimApprovalDecision(request: ApprovalRequest, decision: String) -> Bool {
+        let stateDir = approvalStateDirectoryURL()
+        let decisionURL = stateDir.appendingPathComponent(approvalDecisionFileName)
+        let activeURL = stateDir.appendingPathComponent(approvalActiveFileName)
+        guard let active = loadApprovalRequest(), active.requestId == request.requestId else {
+            return false
+        }
+        let payload: [String: Any] = [
+            "request_id": request.requestId,
+            "decision": decision,
+            "source": "gui",
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else {
+            return false
+        }
+        try? FileManager.default.createDirectory(
+            at: stateDir,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        let fd = Darwin.open(decisionURL.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        if fd == -1 {
+            return false
+        }
+        let writeSucceeded = data.withUnsafeBytes { rawBuffer -> Bool in
+            guard let baseAddress = rawBuffer.baseAddress else { return false }
+            var totalWritten = 0
+            while totalWritten < data.count {
+                let written = Darwin.write(fd, baseAddress.advanced(by: totalWritten), data.count - totalWritten)
+                if written <= 0 {
+                    return false
+                }
+                totalWritten += written
+            }
+            return true
+        }
+        _ = Darwin.close(fd)
+        if !writeSucceeded {
+            try? FileManager.default.removeItem(at: decisionURL)
+            return false
+        }
+        if let active = loadApprovalRequest(), active.requestId == request.requestId {
+            try? FileManager.default.removeItem(at: activeURL)
+        }
+        return true
     }
 }
 
@@ -418,6 +678,18 @@ extension MenuBarManager {
             let serviceItem = NSMenuItem(title: serviceText, action: nil, keyEquivalent: "")
             serviceItem.isEnabled = false
             menu.addItem(serviceItem)
+        }
+
+        // 如果有待处理的 AI 请求，显示确认菜单项
+        if let _ = pendingAiRequest {
+            let aiApprovalItem = NSMenuItem(
+                title: "🟡 等待 AI 修复确认...",
+                action: #selector(MenuBarController.showPendingApproval),
+                keyEquivalent: ""
+            )
+            aiApprovalItem.target = NSApplication.shared.delegate as? MenuBarController
+            menu.addItem(aiApprovalItem)
+            menu.addItem(.separator())
         }
 
         menu.addItem(.separator())

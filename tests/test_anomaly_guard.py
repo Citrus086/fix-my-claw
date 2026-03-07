@@ -956,6 +956,80 @@ class TestNotifyDecision(unittest.TestCase):
             self.assertEqual(out.get("decision"), "timeout")
             self.assertEqual(after_ids, ["m-ask", "10"])
 
+    def test_ask_user_enable_ai_stops_when_gui_claims_first(self) -> None:
+        state_dir = Path(tempfile.mkdtemp())
+        cfg = config_module.AppConfig(
+            monitor=config_module.MonitorConfig(
+                state_dir=state_dir,
+                log_file=state_dir / "fix-my-claw.log",
+            ),
+            notify=config_module.NotifyConfig(
+                account="fix-my-claw",
+                target="channel:1479011917367476347",
+                ask_enable_ai=True,
+                ask_timeout_seconds=1,
+                poll_interval_seconds=0,
+            ),
+        )
+        attempt_dir = state_dir / "attempts" / "a-1"
+        attempt_dir.mkdir(parents=True)
+
+        def _read_side_effect(_cfg: config_module.AppConfig, *, after_id: str | None = None) -> list[dict]:
+            active = shared_module._read_ai_approval_request(state_dir)
+            self.assertIsNotNone(active)
+            request_id = str((active or {}).get("request_id", ""))
+            claimed, payload = shared_module._claim_ai_approval_decision(
+                state_dir,
+                request_id=request_id,
+                decision="no",
+                source="gui",
+            )
+            self.assertTrue(claimed)
+            self.assertEqual((payload or {}).get("source"), "gui")
+            return []
+
+        with patch.object(notify_module, "_notify_send", return_value={"sent": True, "message_id": "m-ask"}), patch.object(
+            notify_module, "_resolve_sent_message_author_id", return_value="1479170394580848660"
+        ), patch.object(
+            notify_module, "_notify_read_messages", side_effect=_read_side_effect
+        ), patch.object(
+            notify_module.time, "monotonic", side_effect=[0, 0, 0.5, 2]
+        ), patch.object(
+            notify_module.time, "sleep", return_value=None
+        ):
+            out = notify_module._ask_user_enable_ai(cfg, attempt_dir)
+            self.assertEqual(out.get("decision"), "no")
+            self.assertEqual(out.get("source"), "gui")
+            self.assertFalse((state_dir / "ai_approval.active.json").exists())
+
+    def test_ai_approval_decision_claim_is_first_writer_wins(self) -> None:
+        state_dir = Path(tempfile.mkdtemp())
+        attempt_dir = state_dir / "attempts" / "a-1"
+        attempt_dir.mkdir(parents=True)
+        shared_module._create_ai_approval_request(
+            state_dir,
+            request_id="req-1",
+            attempt_dir=attempt_dir,
+            prompt="approve?",
+        )
+        first_claimed, first_payload = shared_module._claim_ai_approval_decision(
+            state_dir,
+            request_id="req-1",
+            decision="no",
+            source="discord",
+        )
+        second_claimed, second_payload = shared_module._claim_ai_approval_decision(
+            state_dir,
+            request_id="req-1",
+            decision="yes",
+            source="gui",
+        )
+        self.assertTrue(first_claimed)
+        self.assertEqual((first_payload or {}).get("source"), "discord")
+        self.assertFalse(second_claimed)
+        self.assertEqual((second_payload or {}).get("decision"), "no")
+        self.assertEqual((second_payload or {}).get("source"), "discord")
+
     def test_notify_read_messages_uses_read_timeout(self) -> None:
         cfg = config_module.AppConfig(
             notify=config_module.NotifyConfig(
@@ -1204,6 +1278,34 @@ class TestRepairFlow(unittest.TestCase):
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertFalse(result.used_ai)
             ai_mock.assert_not_called()
+
+    def test_gui_no_decision_wins_and_is_notified_once(self) -> None:
+        cfg = self._cfg()
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(
+            repair_module,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=False),
+            ],
+        ), patch.object(
+            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "no", "source": "gui"}
+        ), patch.object(
+            repair_module, "_run_ai_repair"
+        ) as ai_mock, patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertFalse(result.used_ai)
+            ai_mock.assert_not_called()
+            messages = [call.args[1] for call in notify_mock.call_args_list]
+            self.assertTrue(any("已收到 GUI 的 no" in message for message in messages))
+            self.assertEqual(sum("已收到 GUI 的 no" in message for message in messages), 1)
 
     def test_ai_disabled_still_notifies_but_skips_yes_no_and_ai_flow(self) -> None:
         cfg = config_module.AppConfig(

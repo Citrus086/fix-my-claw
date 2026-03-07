@@ -8,7 +8,15 @@ from typing import Any
 
 from .config import AppConfig
 from .runtime import run_cmd
-from .shared import _parse_json_maybe, _write_attempt_file, redact_text
+from .shared import (
+    _claim_ai_approval_decision,
+    _clear_ai_approval_request,
+    _create_ai_approval_request,
+    _parse_json_maybe,
+    _read_ai_approval_decision,
+    _write_attempt_file,
+    redact_text,
+)
 
 
 def _notify_send(cfg: AppConfig, text: str, *, silent: bool | None = None) -> dict[str, Any]:
@@ -183,6 +191,18 @@ def _extract_ai_decision(
     return None
 
 
+def _decision_from_shared_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    decision = str(payload.get("decision", "")).strip()
+    if not decision:
+        return None
+    out = dict(payload)
+    out["asked"] = True
+    out["decision"] = decision
+    return out
+
+
 def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
     if not cfg.notify.ask_enable_ai:
         return {"asked": False, "decision": "skip"}
@@ -198,30 +218,59 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
         cfg,
         str(message_id) if message_id else None,
     )
+    request_id = f"{attempt_dir.name}-{time.time_ns()}"
+    request_payload = _create_ai_approval_request(
+        cfg.monitor.state_dir,
+        request_id=request_id,
+        attempt_dir=attempt_dir,
+        prompt=prompt,
+        metadata={
+            "notify_message_id": str(message_id) if message_id else None,
+            "required_mention_id": required_mention_id,
+            "notify_account": cfg.notify.account,
+        },
+    )
     _write_attempt_file(
         attempt_dir,
         "notify.ask.json",
-        json.dumps(sent, ensure_ascii=False, indent=2),
+        json.dumps(
+            {
+                **sent,
+                "request_id": request_id,
+                "approval_request_path": str((cfg.monitor.state_dir / "ai_approval.active.json").resolve()),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
     )
     _write_attempt_file(
         attempt_dir,
         "notify.ask.mention.json",
         json.dumps(
             {
+                "request_id": request_id,
                 "required_mention_id": required_mention_id,
                 "notify_account": cfg.notify.account,
+                "approval_request": request_payload,
             },
             ensure_ascii=False,
             indent=2,
         ),
     )
-    if not sent.get("sent"):
-        return {"asked": True, "decision": "error", "send": sent}
 
     deadline = time.monotonic() + cfg.notify.ask_timeout_seconds
     last_seen = str(message_id) if message_id else None
     invalid_replies = 0
     while time.monotonic() < deadline:
+        shared_decision = _decision_from_shared_payload(_read_ai_approval_decision(cfg.monitor.state_dir))
+        if shared_decision and str(shared_decision.get("request_id", "")).strip() == request_id:
+            _write_attempt_file(
+                attempt_dir,
+                "notify.ask.decision.json",
+                json.dumps(shared_decision, ensure_ascii=False, indent=2),
+            )
+            _clear_ai_approval_request(cfg.monitor.state_dir, request_id=request_id, clear_decision=False)
+            return shared_decision
         messages = _notify_read_messages(cfg, after_id=last_seen)
         next_last_seen = last_seen
         for msg in messages:
@@ -230,12 +279,22 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
                 next_last_seen = _max_message_id(next_last_seen, msg_id)
             decision = _extract_ai_decision(cfg, msg, required_mention_id=required_mention_id)
             if decision:
-                out = {
-                    "asked": True,
-                    "decision": decision,
-                    "reply_message_id": str(msg.get("id", "")),
-                    "reply_author_id": str((msg.get("author") or {}).get("id", "")),
-                }
+                claimed, payload = _claim_ai_approval_decision(
+                    cfg.monitor.state_dir,
+                    request_id=request_id,
+                    decision=decision,
+                    source="discord",
+                    metadata={
+                        "reply_message_id": str(msg.get("id", "")),
+                        "reply_author_id": str((msg.get("author") or {}).get("id", "")),
+                    },
+                )
+                out = _decision_from_shared_payload(payload)
+                if not out:
+                    continue
+                if str(out.get("request_id", "")).strip() != request_id:
+                    continue
+                out["won"] = claimed
                 _write_attempt_file(
                     attempt_dir,
                     "notify.ask.decision.json",
@@ -261,6 +320,7 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
                         "notify.ask.decision.json",
                         json.dumps(out, ensure_ascii=False, indent=2),
                     )
+                    _clear_ai_approval_request(cfg.monitor.state_dir, request_id=request_id, clear_decision=False)
                     return out
                 remaining = max_invalid_replies - invalid_replies
                 _notify_send(
@@ -277,4 +337,5 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
         "notify.ask.decision.json",
         json.dumps(out, ensure_ascii=False, indent=2),
     )
+    _clear_ai_approval_request(cfg.monitor.state_dir, request_id=request_id, clear_decision=False)
     return out

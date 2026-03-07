@@ -66,7 +66,7 @@ post_step_wait_seconds = 2
 
 [notify]
 channel = "discord"
-account = "orchestrator"
+account = "fix-my-claw"
 target = "channel:1479011917367476347"
 silent = true
 send_timeout_seconds = 20
@@ -75,6 +75,8 @@ ask_enable_ai = true
 ask_timeout_seconds = 300
 poll_interval_seconds = 5
 read_limit = 20
+# Notification level: "all" (all events), "important" (AI confirmation, repair failures), "critical" (only critical failures)
+level = "all"
 # If target is channel:..., reply should mention notify account (e.g. "@fix-my-claw yes").
 # Only strict replies are accepted: 是/否/yes/no. Invalid replies are re-asked and capped at 3 attempts.
 operator_user_ids = []
@@ -258,7 +260,7 @@ class AnomalyGuardConfig:
 @dataclass(frozen=True)
 class NotifyConfig:
     channel: str = "discord"
-    account: str = "orchestrator"
+    account: str = "fix-my-claw"
     target: str = "channel:1479011917367476347"
     silent: bool = True
     send_timeout_seconds: int = 20
@@ -267,6 +269,7 @@ class NotifyConfig:
     ask_timeout_seconds: int = 300
     poll_interval_seconds: int = 5
     read_limit: int = 20
+    level: str = "all"  # "all" | "important" | "critical"
     operator_user_ids: list[str] = field(default_factory=list)
 
 
@@ -412,6 +415,9 @@ def _parse_notify(raw: dict[str, Any]) -> NotifyConfig:
     cfg = NotifyConfig()
     send_timeout_seconds = max(5, int(_get(raw, "send_timeout_seconds", cfg.send_timeout_seconds)))
     read_timeout_seconds = max(5, int(_get(raw, "read_timeout_seconds", send_timeout_seconds)))
+    level_value = str(_get(raw, "level", cfg.level)).strip().lower()
+    if level_value not in {"all", "important", "critical"}:
+        level_value = "all"
     return NotifyConfig(
         channel=str(_get(raw, "channel", cfg.channel)),
         account=str(_get(raw, "account", cfg.account)),
@@ -423,6 +429,7 @@ def _parse_notify(raw: dict[str, Any]) -> NotifyConfig:
         ask_timeout_seconds=max(15, int(_get(raw, "ask_timeout_seconds", cfg.ask_timeout_seconds))),
         poll_interval_seconds=max(1, int(_get(raw, "poll_interval_seconds", cfg.poll_interval_seconds))),
         read_limit=max(1, int(_get(raw, "read_limit", cfg.read_limit))),
+        level=level_value,
         operator_user_ids=[str(x).strip() for x in _get(raw, "operator_user_ids", cfg.operator_user_ids)],
     )
 
