@@ -21,6 +21,11 @@ from fix_my_claw import runtime as runtime_module
 from fix_my_claw import shared as shared_module
 from fix_my_claw import state as state_module
 
+# Test constants for Discord IDs (example values, not real)
+TEST_CHANNEL_ID = "1479011917367476347"
+TEST_BOT_USER_ID = "1479170394580848660"
+TEST_BOT_USERNAME = "fix-my-claw"
+
 
 def _make_cmd_result(
     argv: list[str] | None = None,
@@ -844,15 +849,15 @@ class TestNotifyDecision(unittest.TestCase):
     def test_extract_ai_decision_requires_mention_for_channel_target(self) -> None:
         cfg = config_module.AppConfig(
             notify=config_module.NotifyConfig(
-                account="fix-my-claw",
+                account=TEST_BOT_USERNAME,
                 target="channel:123",
             )
         )
         plain_yes = {"content": "yes", "author": {"id": "u1", "bot": False}}
         mention_yes = {
-            "content": "<@1479170394580848660> yes",
+            "content": f"<@{TEST_BOT_USER_ID}> yes",
             "author": {"id": "u1", "bot": False},
-            "mentions": [{"id": "1479170394580848660", "username": "fix-my-claw"}],
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
         }
         wrong_mention = {
             "content": "<@222> yes",
@@ -862,16 +867,16 @@ class TestNotifyDecision(unittest.TestCase):
 
         self.assertIsNone(notify_module._extract_ai_decision(cfg, plain_yes))
         self.assertEqual(notify_module._extract_ai_decision(cfg, mention_yes), "yes")
-        self.assertIsNone(notify_module._extract_ai_decision(cfg, wrong_mention, required_mention_id="1479170394580848660"))
+        self.assertIsNone(notify_module._extract_ai_decision(cfg, wrong_mention, required_mention_id=TEST_BOT_USER_ID))
         self.assertEqual(
-            notify_module._extract_ai_decision(cfg, mention_yes, required_mention_id="1479170394580848660"),
+            notify_module._extract_ai_decision(cfg, mention_yes, required_mention_id=TEST_BOT_USER_ID),
             "yes",
         )
         self.assertEqual(
             notify_module._extract_ai_decision(
                 cfg,
-                {"content": "<@1479170394580848660> yes", "author": {"id": "u1", "bot": False}},
-                required_mention_id="1479170394580848660",
+                {"content": f"<@{TEST_BOT_USER_ID}> yes", "author": {"id": "u1", "bot": False}},
+                required_mention_id=TEST_BOT_USER_ID,
             ),
             "yes",
         )
@@ -879,8 +884,8 @@ class TestNotifyDecision(unittest.TestCase):
     def test_ask_user_enable_ai_stops_after_three_invalid_replies(self) -> None:
         cfg = config_module.AppConfig(
             notify=config_module.NotifyConfig(
-                account="fix-my-claw",
-                target="channel:1479011917367476347",
+                account=TEST_BOT_USERNAME,
+                target=f"channel:{TEST_CHANNEL_ID}",
                 ask_enable_ai=True,
                 ask_timeout_seconds=60,
                 poll_interval_seconds=1,
@@ -891,21 +896,21 @@ class TestNotifyDecision(unittest.TestCase):
         invalid_replies = [
             {
                 "id": "m1",
-                "content": "<@1479170394580848660> maybe",
+                "content": f"<@{TEST_BOT_USER_ID}> maybe",
                 "author": {"id": "u1", "bot": False},
-                "mentions": [{"id": "1479170394580848660", "username": "fix-my-claw"}],
+                "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
             },
             {
                 "id": "m2",
-                "content": "<@1479170394580848660> 好的",
+                "content": f"<@{TEST_BOT_USER_ID}> 好的",
                 "author": {"id": "u1", "bot": False},
-                "mentions": [{"id": "1479170394580848660", "username": "fix-my-claw"}],
+                "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
             },
             {
                 "id": "m3",
-                "content": "<@1479170394580848660> 继续",
+                "content": f"<@{TEST_BOT_USER_ID}> 继续",
                 "author": {"id": "u1", "bot": False},
-                "mentions": [{"id": "1479170394580848660", "username": "fix-my-claw"}],
+                "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
             },
         ]
         with patch.object(
@@ -913,7 +918,7 @@ class TestNotifyDecision(unittest.TestCase):
             "_notify_send",
             side_effect=[sent_payload, {"sent": True}, {"sent": True}],
         ) as notify_mock, patch.object(
-            notify_module, "_resolve_sent_message_author_id", return_value="1479170394580848660"
+            notify_module, "_resolve_sent_message_author_id", return_value=TEST_BOT_USER_ID
         ), patch.object(notify_module, "_notify_read_messages", side_effect=[invalid_replies]):
             out = notify_module._ask_user_enable_ai(cfg, attempt_dir)
             self.assertEqual(out.get("decision"), "invalid_limit")
@@ -923,8 +928,8 @@ class TestNotifyDecision(unittest.TestCase):
     def test_ask_user_enable_ai_advances_last_seen_by_batch_max_id(self) -> None:
         cfg = config_module.AppConfig(
             notify=config_module.NotifyConfig(
-                account="fix-my-claw",
-                target="channel:1479011917367476347",
+                account=TEST_BOT_USERNAME,
+                target=f"channel:{TEST_CHANNEL_ID}",
                 ask_enable_ai=True,
                 ask_timeout_seconds=1,
                 poll_interval_seconds=0,
@@ -944,7 +949,7 @@ class TestNotifyDecision(unittest.TestCase):
             return []
 
         with patch.object(notify_module, "_notify_send", return_value={"sent": True, "message_id": "m-ask"}), patch.object(
-            notify_module, "_resolve_sent_message_author_id", return_value="1479170394580848660"
+            notify_module, "_resolve_sent_message_author_id", return_value=TEST_BOT_USER_ID
         ), patch.object(
             notify_module, "_notify_read_messages", side_effect=_read_side_effect
         ), patch.object(
@@ -964,8 +969,8 @@ class TestNotifyDecision(unittest.TestCase):
                 log_file=state_dir / "fix-my-claw.log",
             ),
             notify=config_module.NotifyConfig(
-                account="fix-my-claw",
-                target="channel:1479011917367476347",
+                account=TEST_BOT_USERNAME,
+                target=f"channel:{TEST_CHANNEL_ID}",
                 ask_enable_ai=True,
                 ask_timeout_seconds=1,
                 poll_interval_seconds=0,
@@ -989,7 +994,7 @@ class TestNotifyDecision(unittest.TestCase):
             return []
 
         with patch.object(notify_module, "_notify_send", return_value={"sent": True, "message_id": "m-ask"}), patch.object(
-            notify_module, "_resolve_sent_message_author_id", return_value="1479170394580848660"
+            notify_module, "_resolve_sent_message_author_id", return_value=TEST_BOT_USER_ID
         ), patch.object(
             notify_module, "_notify_read_messages", side_effect=_read_side_effect
         ), patch.object(

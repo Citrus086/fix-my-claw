@@ -20,6 +20,7 @@ A plug-and-play watchdog for OpenClaw — keep it healthy automatically.
 - 🧾 **Operator-friendly**: writes a timestamped incident folder under `~/.fix-my-claw/attempts/` for debugging.
 - 🧯 **Safe defaults**: repair cooldown + daily attempt limits + single-instance lock to avoid flapping.
 - 🧷 **Service-ready**: ships with Linux `systemd` and macOS `launchd` templates.
+- 🖥️ **macOS GUI**: standalone menu bar app with zero dependencies — just download and run.
 
 - One command to start: `fix-my-claw up`
 - Probes `openclaw gateway health --json` + `openclaw gateway status --json`
@@ -172,6 +173,49 @@ Behavior:
 - `fix-my-claw stop` turns monitoring off. The launchd job stays loaded and idles until you unload it manually or uninstall.
 
 If the virtualenv path changes later, rerun `pip install -e .` if needed and then rerun `deploy/launchd/install.sh`.
+
+## 🖥️ macOS GUI Application
+
+A standalone menu bar app that bundles the CLI — no Python or dependencies required.
+
+### For Users
+
+Download `FixMyClawGUI.app` from [Releases](../../releases), then:
+
+1. Open the app — it will appear in your menu bar
+2. Click the menu bar icon to view status, start/stop monitoring, or trigger repairs
+3. Drag to `/Applications` for permanent installation
+
+That's it! The app includes everything it needs.
+
+### For Developers
+
+Build the standalone app from source:
+
+```bash
+# Build CLI + GUI and bundle into FixMyClawGUI.app
+./scripts/build-app.sh
+
+# Output: dist/FixMyClawGUI.app (ready to distribute)
+```
+
+Build options:
+
+```bash
+./scripts/build-app.sh           # Build + create DMG installer
+./scripts/build-app.sh --no-dmg  # Build only (skip DMG)
+./scripts/build-app.sh --clean   # Clean rebuild
+```
+
+The build script:
+- Uses PyInstaller to package the Python CLI into a standalone binary
+- Builds the Swift GUI with Swift Package Manager
+- Bundles both into a single `.app` that can be distributed to other macOS users
+
+Requirements for building:
+- Python 3.9+ with pip
+- Xcode Command Line Tools (for Swift compilation)
+- PyInstaller (`pip install pyinstaller`)
 
 ## ⬆️ Updating after `git pull`
 

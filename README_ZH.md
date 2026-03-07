@@ -13,11 +13,12 @@
 
 - 🩹 **自动自愈**：检测到异常后自动执行修复步骤。
 - 🧱 **分层修复**：会话仍可达时先尝试软暂停 `PAUSE` 保留现场；只有仍异常时才升级到 `/stop`、`/new` 和官方结构修复。
-- 🔁 **异常守卫**：可从近期日志识别“探针健康但 Agent 在重复/ping-pong”的异常。
+- 🔁 **异常守卫**：可从近期日志识别"探针健康但 Agent 在重复/ping-pong"的异常。
 - 🔔 **人工确认开关**：支持通过 Discord 通知并回复 `yes/no` 决定是否启用 Codex 修复。
 - 🧾 **好排障**：每次异常会在 `~/.fix-my-claw/attempts/` 下保存带时间戳的现场产物。
 - 🧯 **默认更稳**：修复冷却、每日次数限制、单实例锁，避免反复抖动。
 - 🧷 **服务化部署就能用**：内置 Linux `systemd` 与 macOS `launchd` 模板。
+- 🖥️ **macOS 图形界面**：独立菜单栏应用，零依赖 —— 下载即用。
 
 - 一键启动：`fix-my-claw up`
 - 定时探测：`openclaw gateway health --json` + `openclaw gateway status --json`
@@ -170,6 +171,49 @@ pip install -e .
 - `fix-my-claw stop` 表示关闭监控。launchd job 仍会保留并进入 idle；如需彻底卸载，请手动 `bootout` 或执行卸载脚本。
 
 如果后面虚拟环境路径变了，先按需重新执行 `pip install -e .`，再重新执行 `deploy/launchd/install.sh`。
+
+## 🖥️ macOS 图形界面应用
+
+一个独立的菜单栏应用，内置 CLI —— 无需安装 Python 或任何依赖。
+
+### 用户使用
+
+从 [Releases](../../releases) 下载 `FixMyClawGUI.app`，然后：
+
+1. 打开应用 — 会在菜单栏显示图标
+2. 点击菜单栏图标查看状态、开启/关闭监控、或触发修复
+3. 拖到 `/Applications` 即可永久安装
+
+就这么简单！应用已包含所有必需组件。
+
+### 开发者构建
+
+从源码构建独立应用：
+
+```bash
+# 构建 CLI + GUI 并打包成 FixMyClawGUI.app
+./scripts/build-app.sh
+
+# 输出：dist/FixMyClawGUI.app（可直接分发）
+```
+
+构建选项：
+
+```bash
+./scripts/build-app.sh           # 构建 + 创建 DMG 安装包
+./scripts/build-app.sh --no-dmg  # 仅构建（跳过 DMG）
+./scripts/build-app.sh --clean   # 清理后重新构建
+```
+
+构建脚本会：
+- 使用 PyInstaller 将 Python CLI 打包成独立二进制
+- 使用 Swift Package Manager 构建 Swift GUI
+- 将两者打包成单个 `.app`，可直接分发给其他 macOS 用户
+
+构建要求：
+- Python 3.9+ 及 pip
+- Xcode Command Line Tools（用于 Swift 编译）
+- PyInstaller（`pip install pyinstaller`）
 
 ## ⬆️ `git pull` 之后怎么更新
 

@@ -182,9 +182,44 @@ def _run_session_command_stage(
     return results
 
 
+# Maximum age in seconds for attempt directories (7 days)
+MAX_ATTEMPT_DIR_AGE_SECONDS = 7 * 24 * 60 * 60
+
+
+def _cleanup_old_attempt_dirs(cfg: AppConfig) -> int:
+    """Remove attempt directories older than MAX_ATTEMPT_DIR_AGE_SECONDS.
+
+    Returns the number of directories removed.
+    """
+    base = cfg.monitor.state_dir / "attempts"
+    if not base.exists():
+        return 0
+
+    removed_count = 0
+    now = time.time()
+    try:
+        for entry in base.iterdir():
+            if not entry.is_dir():
+                continue
+            try:
+                # Check directory modification time
+                dir_mtime = entry.stat().st_mtime
+                if now - dir_mtime > MAX_ATTEMPT_DIR_AGE_SECONDS:
+                    shutil.rmtree(entry)
+                    removed_count += 1
+            except (OSError, PermissionError):
+                # Skip directories we can't access or remove
+                continue
+    except (OSError, PermissionError):
+        pass
+    return removed_count
+
+
 def _attempt_dir(cfg: AppConfig) -> Path:
     base = cfg.monitor.state_dir / "attempts"
     ensure_dir(base)
+    # Clean up old attempt directories before creating a new one
+    _cleanup_old_attempt_dirs(cfg)
     ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
     return Path(tempfile.mkdtemp(prefix=f"{ts}-", dir=str(base)))
 

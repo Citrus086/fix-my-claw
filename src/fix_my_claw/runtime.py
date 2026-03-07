@@ -55,7 +55,8 @@ def run_cmd(
         code = 1
         out = ""
         err = f"[fix-my-claw] os error running {argv!r}: {e}"
-    duration_ms = int((time.monotonic() - started) * 1000)
+    # Calculate duration with a reasonable cap (24 hours max = 86400000 ms)
+    duration_ms = min(86400000, int((time.monotonic() - started) * 1000))
     return CmdResult(
         argv=list(argv),
         cwd=cwd,

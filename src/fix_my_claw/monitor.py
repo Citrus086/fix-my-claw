@@ -20,6 +20,10 @@ def monitor_loop(cfg: AppConfig, store: StateStore) -> None:
     watchdog_log = logging.getLogger("fix_my_claw.watchdog")
     watchdog_log.info("starting monitor loop: interval=%ss", cfg.monitor.interval_seconds)
     monitor_disabled = False
+    # Error backoff to prevent log spam on repeated failures
+    consecutive_errors = 0
+    max_backoff_seconds = 300  # 5 minutes max backoff
+
     while True:
         try:
             enabled = store.is_enabled()
@@ -36,6 +40,8 @@ def monitor_loop(cfg: AppConfig, store: StateStore) -> None:
                     watchdog_log.info("monitor is enabled again; loop resumed")
                     monitor_disabled = False
             evaluation = run_check(cfg, store)
+            # Reset error counter on successful check
+            consecutive_errors = 0
             if not evaluation.effective_healthy:
                 anomaly_triggered = bool(evaluation.anomaly_guard and evaluation.anomaly_guard.get("triggered"))
                 if anomaly_triggered:
@@ -73,5 +79,21 @@ def monitor_loop(cfg: AppConfig, store: StateStore) -> None:
                 else:
                     watchdog_log.info("repair skipped: %s", result.details)
         except Exception as exc:
-            watchdog_log.exception("monitor loop error: %s", exc)
+            consecutive_errors += 1
+            # Log with backoff info to help diagnose persistent issues
+            backoff = min(max_backoff_seconds, cfg.monitor.interval_seconds * (2 ** min(consecutive_errors - 1, 5)))
+            if consecutive_errors <= 3:
+                # Log full exception for first few errors
+                watchdog_log.exception("monitor loop error (attempt %s): %s", consecutive_errors, exc)
+            else:
+                # Log summary for repeated errors to reduce noise
+                watchdog_log.error(
+                    "monitor loop error (attempt %s, backing off %ss): %s",
+                    consecutive_errors,
+                    backoff,
+                    exc,
+                )
+            time.sleep(backoff)
+            continue  # Skip the normal sleep since we already slept with backoff
+
         time.sleep(cfg.monitor.interval_seconds)

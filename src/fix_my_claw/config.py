@@ -413,8 +413,9 @@ def _parse_anomaly_guard(raw: dict[str, Any]) -> AnomalyGuardConfig:
 
 def _parse_notify(raw: dict[str, Any]) -> NotifyConfig:
     cfg = NotifyConfig()
-    send_timeout_seconds = max(5, int(_get(raw, "send_timeout_seconds", cfg.send_timeout_seconds)))
-    read_timeout_seconds = max(5, int(_get(raw, "read_timeout_seconds", send_timeout_seconds)))
+    # Clamp timeouts to reasonable bounds: min 5s, max 5 minutes
+    send_timeout_seconds = min(300, max(5, int(_get(raw, "send_timeout_seconds", cfg.send_timeout_seconds))))
+    read_timeout_seconds = min(300, max(5, int(_get(raw, "read_timeout_seconds", send_timeout_seconds))))
     level_value = str(_get(raw, "level", cfg.level)).strip().lower()
     if level_value not in {"all", "important", "critical"}:
         level_value = "all"
@@ -426,8 +427,10 @@ def _parse_notify(raw: dict[str, Any]) -> NotifyConfig:
         send_timeout_seconds=send_timeout_seconds,
         read_timeout_seconds=read_timeout_seconds,
         ask_enable_ai=bool(_get(raw, "ask_enable_ai", cfg.ask_enable_ai)),
-        ask_timeout_seconds=max(15, int(_get(raw, "ask_timeout_seconds", cfg.ask_timeout_seconds))),
-        poll_interval_seconds=max(1, int(_get(raw, "poll_interval_seconds", cfg.poll_interval_seconds))),
+        # Clamp ask timeout: min 15s, max 24 hours
+        ask_timeout_seconds=min(86400, max(15, int(_get(raw, "ask_timeout_seconds", cfg.ask_timeout_seconds)))),
+        # Clamp poll interval: min 1s, max 1 hour
+        poll_interval_seconds=min(3600, max(1, int(_get(raw, "poll_interval_seconds", cfg.poll_interval_seconds)))),
         read_limit=max(1, int(_get(raw, "read_limit", cfg.read_limit))),
         level=level_value,
         operator_user_ids=[str(x).strip() for x in _get(raw, "operator_user_ids", cfg.operator_user_ids)],
@@ -442,9 +445,12 @@ def _parse_ai(raw: dict[str, Any]) -> AiConfig:
         command=str(_get(raw, "command", cfg.command)),
         args=list(_get(raw, "args", cfg.args)),
         model=_get(raw, "model", cfg.model),
-        timeout_seconds=max(1, int(_get(raw, "timeout_seconds", cfg.timeout_seconds))),
-        max_attempts_per_day=max(0, int(_get(raw, "max_attempts_per_day", cfg.max_attempts_per_day))),
-        cooldown_seconds=max(0, int(_get(raw, "cooldown_seconds", cfg.cooldown_seconds))),
+        # Clamp timeout: min 1s, max 24 hours
+        timeout_seconds=min(86400, max(1, int(_get(raw, "timeout_seconds", cfg.timeout_seconds)))),
+        # Clamp max attempts: min 0, max 100 (reasonable upper bound)
+        max_attempts_per_day=min(100, max(0, int(_get(raw, "max_attempts_per_day", cfg.max_attempts_per_day)))),
+        # Clamp cooldown: min 0, max 7 days
+        cooldown_seconds=min(604800, max(0, int(_get(raw, "cooldown_seconds", cfg.cooldown_seconds)))),
         allow_code_changes=bool(_get(raw, "allow_code_changes", cfg.allow_code_changes)),
         args_code=list(_get(raw, "args_code", cfg.args_code)),
     )

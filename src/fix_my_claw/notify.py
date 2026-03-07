@@ -212,12 +212,23 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
         f"是否启用 Codex 修复？请 @{cfg.notify.account} 回复 是/否（Please answer with yes/no）。"
         "（回复 yes/是 将先备份整个 ~/.openclaw 到其上级目录）"
     )
-    sent = _notify_send(cfg, prompt, silent=False)
+    try:
+        sent = _notify_send(cfg, prompt, silent=False)
+    except Exception as exc:
+        _write_attempt_file(
+            attempt_dir,
+            "notify.ask.error.json",
+            json.dumps({"error": str(exc), "stage": "send_prompt"}, ensure_ascii=False, indent=2),
+        )
+        return {"asked": False, "decision": "send_failed", "error": str(exc)}
     message_id = sent.get("message_id")
-    required_mention_id = _resolve_sent_message_author_id(
-        cfg,
-        str(message_id) if message_id else None,
-    )
+    try:
+        required_mention_id = _resolve_sent_message_author_id(
+            cfg,
+            str(message_id) if message_id else None,
+        )
+    except Exception:
+        required_mention_id = None
     request_id = f"{attempt_dir.name}-{time.time_ns()}"
     request_payload = _create_ai_approval_request(
         cfg.monitor.state_dir,
@@ -323,11 +334,22 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
                     _clear_ai_approval_request(cfg.monitor.state_dir, request_id=request_id, clear_decision=False)
                     return out
                 remaining = max_invalid_replies - invalid_replies
-                _notify_send(
-                    cfg,
-                    f"fix-my-claw: 未识别到有效回复。请仅回复 是/否（Please answer with yes/no）。剩余 {remaining} 次。",
-                    silent=False,
-                )
+                try:
+                    _notify_send(
+                        cfg,
+                        f"fix-my-claw: 未识别到有效回复。请仅回复 是/否（Please answer with yes/no）。剩余 {remaining} 次。",
+                        silent=False,
+                    )
+                except Exception as notify_exc:
+                    _write_attempt_file(
+                        attempt_dir,
+                        "notify.ask.error.json",
+                        json.dumps(
+                            {"error": str(notify_exc), "stage": "invalid_reply_prompt"},
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                    )
         last_seen = next_last_seen
         time.sleep(cfg.notify.poll_interval_seconds)
 

@@ -180,10 +180,22 @@ def _claim_ai_approval_decision(
         fd = os.open(decision_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
         return False, _read_json_file(decision_path)
+
+    # Use try-finally to ensure fd is always closed properly
+    handle = None
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+        handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        handle.close()
+        handle = None
     except Exception:
+        # Close handle if it was opened but not yet closed
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        # Clean up the partially written file
         decision_path.unlink(missing_ok=True)
         raise
     _clear_ai_approval_request(state_dir, request_id=request_id, clear_decision=False)

@@ -250,14 +250,23 @@ actor CLIWrapper {
         }
 
         let fileManager = FileManager.default
+
+        // 优先查找 .app 包内的 CLI
+        if let bundlePath = Bundle.main.path(forResource: "fix-my-claw", ofType: nil, inDirectory: "Contents/MacOS"),
+           fileManager.isExecutableFile(atPath: bundlePath) {
+            return bundlePath
+        }
+
         let envPaths = (ProcessInfo.processInfo.environment["PATH"] ?? "")
             .split(separator: ":")
             .map(String.init)
         let candidates = envPaths.map { ($0 as NSString).appendingPathComponent("fix-my-claw") } + [
             "/opt/homebrew/bin/fix-my-claw",
             "/usr/local/bin/fix-my-claw",
+            "/opt/anaconda3/bin/fix-my-claw",
+            "\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin/fix-my-claw",
         ]
-        return candidates.first(where: { fileManager.isExecutableFile(atPath: $0) }) ?? "/opt/homebrew/bin/fix-my-claw"
+        return candidates.first(where: { fileManager.isExecutableFile(atPath: $0) }) ?? "fix-my-claw"
     }
 }
 

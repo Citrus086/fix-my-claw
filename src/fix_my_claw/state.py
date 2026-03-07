@@ -14,13 +14,44 @@ LOCK_INITIALIZING_GRACE_SECONDS = 2.0
 MONITOR_ENABLED_DEFAULT = True
 
 
+class StateLockTimeoutError(TimeoutError):
+    """Raised when acquiring the state lock times out.
+
+    This is distinct from TimeoutError raised by the wrapped function,
+    making it easier to diagnose lock contention vs function timeout.
+    """
+    pass
+
+
 def _normalize_enabled(value: Any, *, legacy_desired_state: Any = None) -> bool:
+    """Normalize the enabled flag from various input formats.
+
+    Handles both the current 'enabled' field and the legacy 'desired_state' field
+    for backwards compatibility with older config files.
+
+    Args:
+        value: The current 'enabled' value (bool, str, int, or None)
+        legacy_desired_state: The legacy 'desired_state' value (e.g., "stopped")
+
+    Returns:
+        True if monitoring should be enabled, False otherwise
+
+    Logic:
+        1. If 'enabled' is None but 'desired_state' exists, derive from legacy format
+        2. If still None, return the default (True)
+        3. If boolean, return as-is
+        4. Otherwise, parse string/int: falsey values are {"0", "false", "off", "disabled", "no", "stopped"}
+    """
+    # Handle legacy format: desired_state="stopped" means enabled=False
     if value is None and legacy_desired_state is not None:
         value = str(legacy_desired_state).strip().lower() != "stopped"
+    # Use default if still None
     if value is None:
         return MONITOR_ENABLED_DEFAULT
+    # Return boolean directly
     if isinstance(value, bool):
         return value
+    # Parse string/int: treat these falsey strings as False
     return str(value).strip().lower() not in {"0", "false", "off", "disabled", "no", "stopped"}
 
 
@@ -119,15 +150,26 @@ class FileLock:
             return self._unlink_if_same_lock(current_signature)
 
     def release(self) -> None:
-        if self._fd is not None:
-            try:
-                os.close(self._fd)
-            finally:
-                self._fd = None
+        # Always try to unlink the lock file first, even if close fails
+        # This ensures we don't leave stale lock files behind
+        unlink_error: Exception | None = None
         try:
             self.path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as e:
+            unlink_error = e
+
+        # Close the file descriptor if we have one
+        if self._fd is not None:
+            fd_to_close = self._fd
+            self._fd = None  # Clear first to prevent double-close
+            try:
+                os.close(fd_to_close)
+            except OSError:
+                pass  # Already closed or invalid, ignore
+
+        # Re-raise unlink error if it occurred (after cleanup)
+        if unlink_error is not None:
+            raise unlink_error
 
 
 def _now_ts() -> int:
@@ -197,7 +239,8 @@ class StateStore:
     def _with_lock(self, fn: Any, *, timeout_seconds: int = 5) -> Any:
         lock = FileLock(self.lock_path)
         if not lock.acquire(timeout_seconds=timeout_seconds):
-            raise TimeoutError(f"timed out waiting for state lock: {self.lock_path}")
+            # Use custom exception to distinguish lock timeout from function timeout
+            raise StateLockTimeoutError(f"timed out waiting for state lock: {self.lock_path}")
         try:
             return fn()
         finally:

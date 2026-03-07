@@ -315,14 +315,29 @@ def cmd_service_install(args: argparse.Namespace) -> int:
     if plist_path.exists():
         print(f"service already installed at {plist_path}", file=sys.stderr)
         return 1
+
+    # Track what we've created so we can clean up on failure
+    plist_created = False
+    bootstrapped = False
+
     try:
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         cfg.monitor.state_dir.mkdir(parents=True, exist_ok=True)
         plist_path.write_bytes(_generate_launchd_plist(cfg, args.config))
+        plist_created = True
         _launchctl_run("bootstrap", _get_launchd_domain(), str(plist_path))
+        bootstrapped = True
         _launchctl_run("enable", f"{_get_launchd_domain()}/{_get_launchd_label()}")
         _launchctl_run("kickstart", "-k", f"{_get_launchd_domain()}/{_get_launchd_label()}")
     except (FileNotFoundError, OSError, subprocess.CalledProcessError) as exc:
+        # Clean up on partial failure
+        if bootstrapped:
+            _bootout_launchd_service(plist_path)
+        if plist_created:
+            try:
+                plist_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         print(f"error installing service: {exc}", file=sys.stderr)
         return 1
     print(str(plist_path))
