@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -11,12 +11,22 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
+try:
+    import tomli_w
+except ModuleNotFoundError:  # pragma: no cover
+    tomli_w = None
+
 DEFAULT_CONFIG_PATH = "~/.fix-my-claw/config.toml"
+DEFAULT_PAUSE_MESSAGE = """[CONTROL]
+Action: PAUSE
+Reason: fix-my-claw detected an unhealthy state and is preserving the current task before stronger recovery.
+Expectation: ACK once, then stay paused until further instruction.
+"""
 
 DEFAULT_CONFIG_TOML = """\
 [monitor]
 interval_seconds = 60
-probe_timeout_seconds = 15
+probe_timeout_seconds = 30
 repair_cooldown_seconds = 300
 state_dir = "~/.fix-my-claw"
 log_file = "~/.fix-my-claw/fix-my-claw.log"
@@ -28,13 +38,21 @@ state_dir = "~/.openclaw"
 workspace_dir = "~/.openclaw/workspace"
 health_args = ["gateway", "health", "--json"]
 status_args = ["gateway", "status", "--json"]
-logs_args = ["logs", "--tail", "200"]
+logs_args = ["logs", "--limit", "200", "--plain"]
 
 [repair]
 enabled = true
 session_control_enabled = true
 session_active_minutes = 30
 session_agents = ["macs-orchestrator", "macs-builder", "macs-architect", "macs-research"]
+soft_pause_enabled = true
+pause_message = '''
+[CONTROL]
+Action: PAUSE
+Reason: fix-my-claw detected an unhealthy state and is preserving the current task before stronger recovery.
+Expectation: ACK once, then stay paused until further instruction.
+'''
+pause_wait_seconds = 20
 terminate_message = "/stop"
 new_message = "/new"
 session_command_timeout_seconds = 120
@@ -64,7 +82,7 @@ operator_user_ids = []
 [anomaly_guard]
 enabled = true
 window_lines = 200
-probe_timeout_seconds = 15
+probe_timeout_seconds = 30
 keywords_stop = ["stop", "halt", "abort", "cancel", "terminate", "停止", "立刻停止", "强制停止", "终止", "停止指令"]
 keywords_repeat = ["repeat", "repeating", "loop", "ping-pong", "重复", "死循环", "不断", "一直在重复", "重复汇报"]
 max_repeat_same_signature = 3
@@ -115,7 +133,7 @@ args_code = [
 @dataclass(frozen=True)
 class MonitorConfig:
     interval_seconds: int = 60
-    probe_timeout_seconds: int = 15
+    probe_timeout_seconds: int = 30
     repair_cooldown_seconds: int = 300
     state_dir: Path = field(default_factory=lambda: _as_path("~/.fix-my-claw"))
     log_file: Path = field(default_factory=lambda: _as_path("~/.fix-my-claw/fix-my-claw.log"))
@@ -129,7 +147,7 @@ class OpenClawConfig:
     workspace_dir: Path = field(default_factory=lambda: _as_path("~/.openclaw/workspace"))
     health_args: list[str] = field(default_factory=lambda: ["gateway", "health", "--json"])
     status_args: list[str] = field(default_factory=lambda: ["gateway", "status", "--json"])
-    logs_args: list[str] = field(default_factory=lambda: ["logs", "--tail", "200"])
+    logs_args: list[str] = field(default_factory=lambda: ["logs", "--limit", "200", "--plain"])
 
 
 @dataclass(frozen=True)
@@ -145,6 +163,9 @@ class RepairConfig:
             "macs-research",
         ]
     )
+    soft_pause_enabled: bool = True
+    pause_message: str = DEFAULT_PAUSE_MESSAGE
+    pause_wait_seconds: int = 20
     terminate_message: str = "/stop"
     new_message: str = "/new"
     session_command_timeout_seconds: int = 120
@@ -163,7 +184,7 @@ class RepairConfig:
 class AnomalyGuardConfig:
     enabled: bool = True
     window_lines: int = 200
-    probe_timeout_seconds: int = 15
+    probe_timeout_seconds: int = 30
     keywords_stop: list[str] = field(
         default_factory=lambda: [
             "stop",
@@ -307,7 +328,7 @@ def _get(d: dict[str, Any], key: str, default: Any) -> Any:
 def _parse_monitor(raw: dict[str, Any]) -> MonitorConfig:
     return MonitorConfig(
         interval_seconds=max(1, int(_get(raw, "interval_seconds", 60))),
-        probe_timeout_seconds=max(1, int(_get(raw, "probe_timeout_seconds", 15))),
+        probe_timeout_seconds=max(1, int(_get(raw, "probe_timeout_seconds", 30))),
         repair_cooldown_seconds=max(0, int(_get(raw, "repair_cooldown_seconds", 300))),
         state_dir=_as_path(str(_get(raw, "state_dir", "~/.fix-my-claw"))),
         log_file=_as_path(str(_get(raw, "log_file", "~/.fix-my-claw/fix-my-claw.log"))),
@@ -322,7 +343,7 @@ def _parse_openclaw(raw: dict[str, Any]) -> OpenClawConfig:
         workspace_dir=_as_path(str(_get(raw, "workspace_dir", "~/.openclaw/workspace"))),
         health_args=list(_get(raw, "health_args", ["gateway", "health", "--json"])),
         status_args=list(_get(raw, "status_args", ["gateway", "status", "--json"])),
-        logs_args=list(_get(raw, "logs_args", ["logs", "--tail", "200"])),
+        logs_args=list(_get(raw, "logs_args", ["logs", "--limit", "200", "--plain"])),
     )
 
 
@@ -334,6 +355,9 @@ def _parse_repair(raw: dict[str, Any]) -> RepairConfig:
         session_control_enabled=bool(_get(raw, "session_control_enabled", True)),
         session_active_minutes=max(1, int(_get(raw, "session_active_minutes", 30))),
         session_agents=[str(x).strip() for x in _get(raw, "session_agents", RepairConfig().session_agents)],
+        soft_pause_enabled=bool(_get(raw, "soft_pause_enabled", True)),
+        pause_message=str(_get(raw, "pause_message", DEFAULT_PAUSE_MESSAGE)),
+        pause_wait_seconds=max(0, int(_get(raw, "pause_wait_seconds", 20))),
         terminate_message=str(_get(raw, "terminate_message", "/stop")),
         new_message=str(_get(raw, "new_message", "/new")),
         session_command_timeout_seconds=max(10, int(_get(raw, "session_command_timeout_seconds", 120))),
@@ -448,3 +472,77 @@ def write_default_config(path: str, *, overwrite: bool = False) -> Path:
     ensure_dir(p.parent)
     p.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
     return p
+
+
+def _config_to_dict(cfg: AppConfig) -> dict[str, Any]:
+    """Convert AppConfig into a JSON/TOML-friendly nested mapping."""
+
+    def _convert(value: Any) -> Any:
+        if value is None:
+            return None  # Mark None for filtering
+        if isinstance(value, Path):
+            return str(value)
+        if is_dataclass(value):
+            return {field_.name: _convert(getattr(value, field_.name)) for field_ in fields(value)}
+        if isinstance(value, list):
+            return [_convert(item) for item in value]
+        if isinstance(value, tuple):
+            return [_convert(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): _convert(item) for key, item in value.items()}
+        return value
+
+    def _filter_none(value: Any) -> Any:
+        """Recursively remove None values from the structure."""
+        if value is None:
+            return None  # Will be removed at dict level
+        if isinstance(value, dict):
+            return {k: _filter_none(v) for k, v in value.items() if v is not None}
+        if isinstance(value, list):
+            return [_filter_none(item) for item in value]
+        return value
+
+    converted = _convert(cfg)
+    if not isinstance(converted, dict):
+        raise TypeError("AppConfig conversion did not produce a mapping")
+    
+    # Filter out None values before serialization
+    return _filter_none(converted)
+
+
+def _section_dict(data: dict[str, Any], key: str) -> dict[str, Any]:
+    raw = data.get(key, {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise TypeError(f"{key} must be an object")
+    return dict(raw)
+
+
+def _dict_to_config(data: dict[str, Any]) -> AppConfig:
+    """Rebuild AppConfig from a JSON-compatible mapping."""
+    if not isinstance(data, dict):
+        raise TypeError("config payload must be a JSON object")
+
+    anomaly_raw = data.get("anomaly_guard", data.get("loop_guard", {}))
+    if anomaly_raw is None:
+        anomaly_raw = {}
+    if not isinstance(anomaly_raw, dict):
+        raise TypeError("anomaly_guard must be an object")
+
+    return AppConfig(
+        monitor=_parse_monitor(_section_dict(data, "monitor")),
+        openclaw=_parse_openclaw(_section_dict(data, "openclaw")),
+        repair=_parse_repair(_section_dict(data, "repair")),
+        anomaly_guard=_parse_anomaly_guard(dict(anomaly_raw)),
+        notify=_parse_notify(_section_dict(data, "notify")),
+        ai=_parse_ai(_section_dict(data, "ai")),
+    )
+
+
+def _write_toml(path: Path, data: dict[str, Any]) -> None:
+    """Write a TOML mapping to disk."""
+    if tomli_w is None:
+        raise ImportError("tomli_w is required to write TOML files")
+    ensure_dir(path.parent)
+    path.write_text(tomli_w.dumps(data), encoding="utf-8")

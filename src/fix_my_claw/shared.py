@@ -71,6 +71,13 @@ class SecureRotatingFileHandler(RotatingFileHandler):
         )
 
 
+def _write_attempt_file(dir_: Path, name: str, content: str) -> Path:
+    """Write content to a file in the attempt directory."""
+    path = dir_ / name
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def setup_logging(cfg: "AppConfig") -> None:
     ensure_dir(cfg.monitor.state_dir)
     ensure_dir(cfg.monitor.log_file.parent)

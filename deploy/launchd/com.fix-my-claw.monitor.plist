@@ -22,7 +22,7 @@
     </dict>
 
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
     <key>WorkingDirectory</key>
     <string>/tmp</string>
   </dict>

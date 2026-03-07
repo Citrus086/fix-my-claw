@@ -9,4 +9,7 @@ dist/
 build/
 .DS_Store
 .idea/
+.vscode/
 uv.lock
+gui/.build/
+gui/.swiftpm/

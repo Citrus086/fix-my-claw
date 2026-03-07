@@ -16,7 +16,7 @@ from .config import AppConfig
 from .health import HealthEvaluation, probe_health, probe_logs, probe_status
 from .notify import _ask_user_enable_ai, _notify_send
 from .runtime import CmdResult, run_cmd
-from .shared import _parse_json_maybe, ensure_dir, redact_text, truncate_for_log
+from .shared import _parse_json_maybe, _write_attempt_file, ensure_dir, redact_text, truncate_for_log
 from .state import StateStore, _now_ts
 
 
@@ -129,12 +129,6 @@ def _attempt_dir(cfg: AppConfig) -> Path:
     ensure_dir(base)
     ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
     return Path(tempfile.mkdtemp(prefix=f"{ts}-", dir=str(base)))
-
-
-def _write_attempt_file(dir_: Path, name: str, content: str) -> Path:
-    path = dir_ / name
-    path.write_text(content, encoding="utf-8")
-    return path
 
 
 def _context_logs_timeout_seconds(cfg: AppConfig) -> int:
@@ -398,6 +392,11 @@ class SessionStageData:
 
 
 @dataclass(frozen=True)
+class PauseCheckStageData:
+    waited_before_seconds: int = 0
+
+
+@dataclass(frozen=True)
 class OfficialRepairStageData:
     steps: tuple[CommandExecutionRecord, ...]
     break_reason: str
@@ -452,7 +451,7 @@ class AiRepairStageData:
     result: CmdResult
 
 
-StagePayload = SessionStageData | OfficialRepairStageData | AiDecision | BackupArtifact | AiRepairStageData | None
+StagePayload = SessionStageData | PauseCheckStageData | OfficialRepairStageData | AiDecision | BackupArtifact | AiRepairStageData | None
 
 
 @dataclass(frozen=True)
@@ -469,6 +468,21 @@ class StageResult:
     @property
     def fixed(self) -> bool:
         return bool(self.evaluation and self.evaluation.effective_healthy)
+
+
+def _session_stage_has_successful_commands(stage: StageResult) -> bool:
+    if not isinstance(stage.payload, SessionStageData):
+        return False
+    return any(record.exit_code == 0 for record in stage.payload.commands)
+
+
+def _should_try_soft_pause(cfg: AppConfig, evaluation: HealthEvaluation) -> bool:
+    return (
+        cfg.repair.soft_pause_enabled
+        and cfg.repair.session_control_enabled
+        and bool(cfg.repair.pause_message.strip())
+        and evaluation.status_probe.ok
+    )
 
 
 @dataclass(frozen=True)
@@ -517,7 +531,17 @@ class RepairOutcome:
             out["context_before"] = self.before_context
 
         for stage in self.stages:
-            if stage.name == "terminate":
+            if stage.name == "pause":
+                payload = _require_stage_payload(stage, SessionStageData)
+                out["pause_stage"] = _records_to_json(payload.commands)
+            elif stage.name == "pause_check":
+                payload = _require_stage_payload(stage, PauseCheckStageData)
+                out["pause_wait_seconds"] = payload.waited_before_seconds
+                if stage.context is not None:
+                    out["context_after_pause"] = stage.context
+                if stage.evaluation and stage.evaluation.anomaly_guard is not None:
+                    out["anomaly_guard_after_pause"] = stage.evaluation.anomaly_guard
+            elif stage.name == "terminate":
                 payload = _require_stage_payload(stage, SessionStageData)
                 out["terminate_stage"] = _records_to_json(payload.commands)
             elif stage.name == "new":
@@ -618,6 +642,47 @@ def _require_stage_payload(stage: StageResult, expected_type: type[Any]) -> Any:
 
 
 @dataclass(frozen=True)
+class SessionPauseStage:
+    def run(self, ctx: RepairPipelineContext) -> StageResult:
+        commands = _coerce_execution_records(
+            _run_session_command_stage(
+                ctx.cfg,
+                ctx.attempt_dir,
+                stage_name="pause",
+                message_text=ctx.cfg.repair.pause_message,
+            )
+        )
+        return StageResult(
+            name="pause",
+            status="completed",
+            payload=SessionStageData(stage_name="pause", commands=commands),
+        )
+
+
+@dataclass(frozen=True)
+class PauseAssessmentStage:
+    def run(self, ctx: RepairPipelineContext, *, previous_stage: StageResult) -> StageResult:
+        waited_before_seconds = 0
+        payload = _require_stage_payload(previous_stage, SessionStageData)
+        if payload.commands and ctx.cfg.repair.pause_wait_seconds > 0:
+            time.sleep(ctx.cfg.repair.pause_wait_seconds)
+            waited_before_seconds = ctx.cfg.repair.pause_wait_seconds
+        evaluation, context = _evaluate_with_context(
+            ctx.cfg,
+            ctx.attempt_dir,
+            stage_name="after_pause",
+        )
+        return StageResult(
+            name="pause_check",
+            status="completed",
+            payload=PauseCheckStageData(waited_before_seconds=waited_before_seconds),
+            evaluation=evaluation,
+            context=context,
+            stop_reason="healthy_after_pause" if evaluation.effective_healthy else "still_unhealthy_after_pause",
+        )
+
+
+@dataclass(frozen=True)
 class SessionTerminateStage:
     def run(self, ctx: RepairPipelineContext) -> StageResult:
         commands = _coerce_execution_records(
@@ -689,7 +754,31 @@ class AiDecisionStage:
     preset: dict[str, Any] | None = None
 
     def run(self, ctx: RepairPipelineContext) -> StageResult:
-        decision = self.preset if self.preset is not None else _ask_user_enable_ai(ctx.cfg, ctx.attempt_dir)
+        # 检查是否有全局 GUI 标志文件（GUI 优先）
+        # 标志文件位置：state 目录下（与 attempt_dir 同级）
+        gui_flag_file = ctx.attempt_dir.parent.parent / "gui.ask.flag"
+        
+        if gui_flag_file.exists():
+            # GUI 标志存在，读取用户决定
+            try:
+                with open(gui_flag_file, 'r') as f:
+                    flag_data = json.load(f)
+                    decision = flag_data.get("decision", "no")
+                    # 读取成功后删除标志文件（避免影响后续修复）
+                    gui_flag_file.unlink()
+                return StageResult(
+                    name="ai_decision",
+                    status="completed",
+                    payload=AiDecision(asked=True, decision=decision),
+                )
+            except Exception as exc:
+                # 读取失败，记录错误后回退到 Discord 询问
+                logging.getLogger("fix_my_claw.repair").error(
+                    "Failed to read GUI flag: %s", exc
+                )
+        
+        # GUI 标志不存在，使用 Discord 询问（保持现有逻辑）
+        decision = _ask_user_enable_ai(ctx.cfg, ctx.attempt_dir)
         return StageResult(
             name="ai_decision",
             status="completed",
@@ -811,11 +900,26 @@ def attempt_repair(
     repair_log.warning("starting repair attempt: dir=%s", attempt_dir.resolve())
     outcome.start_notification = _notify_send(
         cfg,
-        "fix-my-claw: 检测到异常，开始执行分层修复（命令终止 -> /new -> 官方结构修复）。",
+        "fix-my-claw: 检测到异常，开始分层修复（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop -> /new -> 官方结构修复）。",
         silent=False,
     )
 
     outcome.before_context = _collect_context(initial_evaluation, attempt_dir, stage_name="before")
+    if _should_try_soft_pause(cfg, initial_evaluation):
+        pause_candidate = SessionPauseStage().run(ctx)
+        pause_payload = _require_stage_payload(pause_candidate, SessionStageData)
+        if pause_payload.commands:
+            pause_stage = outcome.add_stage(pause_candidate)
+            if _session_stage_has_successful_commands(pause_stage):
+                pause_check_stage = outcome.add_stage(PauseAssessmentStage().run(ctx, previous_stage=pause_stage))
+                if pause_check_stage.fixed:
+                    outcome.final_stage = pause_check_stage
+                    outcome.final_notification = _notify_send(
+                        cfg,
+                        "fix-my-claw: 已发送 PAUSE 并完成复检，系统恢复健康，跳过 /stop、/new 与结构修复。",
+                    )
+                    repair_log.warning("recovered after soft pause: dir=%s", attempt_dir.resolve())
+                    return _result_from_outcome(attempted=True, outcome=outcome)
     terminate_stage = outcome.add_stage(SessionTerminateStage().run(ctx))
     outcome.add_stage(SessionResetStage().run(ctx, previous_stage=terminate_stage))
     official_stage = outcome.add_stage(OfficialRepairStage().run(ctx))
@@ -844,7 +948,12 @@ def attempt_repair(
         max_attempts_per_day=cfg.ai.max_attempts_per_day,
         cooldown_seconds=cfg.ai.cooldown_seconds,
     ):
-        outcome.add_stage(AiDecisionStage(preset={"asked": False, "decision": "rate_limited"}).run(ctx))
+        # 直接创建限流决策，不运行 stage（避免触发 GUI 标志检查）
+        outcome.add_stage(StageResult(
+            name="ai_decision",
+            status="completed",
+            payload=AiDecision.from_mapping({"asked": False, "decision": "rate_limited"}),
+        ))
         final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_rate_limited").run(ctx))
         outcome.final_stage = final_stage
         outcome.final_notification = _notify_send(

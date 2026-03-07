@@ -14,7 +14,7 @@ A plug-and-play watchdog for OpenClaw — keep it healthy automatically.
 ## ✨ Highlights
 
 - 🩹 **Auto-heal**: detects unhealthy states and runs recovery steps automatically.
-- 🧱 **Layered recovery**: command-level terminate, then `/new`, then official structural repair steps.
+- 🧱 **Layered recovery**: try a soft `PAUSE` first when the session is still reachable, then escalate to `/stop`, `/new`, and official structural repair only if needed.
 - 🔁 **Anomaly guard**: detects "healthy probes but agent ping-pong/repeat loops" from recent logs.
 - 🔔 **Human approval gate**: optional Discord notification + `yes/no` reply before enabling Codex repair.
 - 🧾 **Operator-friendly**: writes a timestamped incident folder under `~/.fix-my-claw/attempts/` for debugging.
@@ -68,9 +68,9 @@ Update rules:
 ## 🧰 Commands
 
 ```bash
-fix-my-claw start   # set desired_state=running; active monitor loops resume
-fix-my-claw stop    # set desired_state=stopped; monitor loops idle
-fix-my-claw status  # show desired_state and persisted state
+fix-my-claw start   # enable monitoring; active monitor loops resume
+fix-my-claw stop    # disable monitoring; monitor loops idle
+fix-my-claw status  # show whether monitoring is enabled plus persisted state
 fix-my-claw up      # init (if needed) + monitor
 fix-my-claw check   # one-time probe
 fix-my-claw repair  # one-time recovery attempt
@@ -85,15 +85,18 @@ flowchart TD
   A["timer / monitor loop"] --> B["health probe"]
   B --> C["status probe"]
   C -->|healthy| D["sleep"]
-  C -->|unhealthy| E["command stop (/stop)"]
-  E --> F["reset context (/new)"]
-  F --> G["official recovery steps"]
-  G --> H{"healthy?"}
-  H -->|yes| D
-  H -->|no| I["notify + ask yes/no"]
-  I -->|yes| J["backup ~/.openclaw then Codex remediation"]
-  I -->|no| D
-  J --> D
+  C -->|unhealthy| E["soft pause (PAUSE) when session is reachable"]
+  E --> F{"healthy after recheck?"}
+  F -->|yes| D
+  F -->|no| G["command stop (/stop)"]
+  G --> H["reset context (/new)"]
+  H --> I["official recovery steps"]
+  I --> J{"healthy?"}
+  J -->|yes| D
+  J -->|no| K["notify + ask yes/no"]
+  K -->|yes| L["backup ~/.openclaw then Codex remediation"]
+  K -->|no| D
+  L --> D
 ```
 
 ## ⚙️ Configuration
@@ -109,7 +112,7 @@ All settings live in a single TOML file.
 - Note: status notifications are always sent; `yes/no` approval is only used when `ai.enabled = true`.
 - Note: when `notify.target` is a channel (`channel:...`), yes/no replies must mention the notify account (for example, `@fix-my-claw yes`).
 - Note: only strict replies `yes/no` or `是/否` are accepted; non-matching replies trigger a re-ask, and after 3 invalid replies AI repair is skipped for this incident.
-- Extended: `[repair]` adds session-level control knobs for `/stop`, `/new`, and active-session filtering.
+- Extended: `[repair]` adds session-level control knobs for soft `PAUSE`, `/stop`, `/new`, and active-session filtering.
 - Compatibility: legacy key `[loop_guard]` is still accepted.
 - Preferred knob names are `min_cycle_repeated_turns` and `max_cycle_period`; legacy `min_ping_pong_turns` is still accepted as an alias.
 - Additional stagnation knobs are `stagnation_enabled`, `stagnation_min_events`, `stagnation_min_roles`, and `stagnation_max_novel_cluster_ratio`.
@@ -154,10 +157,6 @@ source .venv/bin/activate
 pip install -e .
 
 ./deploy/launchd/install.sh --fix-my-claw-bin "$(command -v fix-my-claw)"
-# If install.sh targeted ~/.zshrc:
-source ~/.zshrc
-# If install.sh targeted ~/.bashrc:
-source ~/.bashrc
 ```
 
 If you already installed `fix-my-claw` elsewhere, pass that absolute binary path explicitly:
@@ -168,8 +167,9 @@ If you already installed `fix-my-claw` elsewhere, pass that absolute binary path
 
 Behavior:
 
-- If gateway is already running during install, watchdog starts immediately
-- `openclaw gateway start` / `restart` / `stop`: shell hook re-syncs watchdog to actual gateway state
+- Install enables monitoring and bootstraps the launchd job immediately.
+- `fix-my-claw start` turns monitoring on.
+- `fix-my-claw stop` turns monitoring off. The launchd job stays loaded and idles until you unload it manually or uninstall.
 
 If the virtualenv path changes later, rerun `pip install -e .` if needed and then rerun `deploy/launchd/install.sh`.
 
@@ -180,8 +180,9 @@ Editable install (`pip install -e .`):
 ```bash
 source .venv/bin/activate
 git pull
-pip install -e .
 ```
+
+Usually that is enough. Rerun `pip install -e .` only if packaging metadata, console scripts, or the virtualenv path changed.
 
 Frozen install (`pip install .`):
 
@@ -199,7 +200,7 @@ One-click uninstall:
 ./deploy/launchd/uninstall.sh
 ```
 
-Keep hook block in shell rc:
+Skip legacy rc-block cleanup:
 
 ```bash
 ./deploy/launchd/uninstall.sh --keep-hook
@@ -211,7 +212,7 @@ Useful commands:
 # Status
 launchctl print "gui/$(id -u)/com.fix-my-claw.monitor"
 
-# Stop/disable
+# Fully unload the launchd job
 launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.fix-my-claw.monitor.plist
 ```
 

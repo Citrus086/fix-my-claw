@@ -1,6 +1,6 @@
 [monitor]
 interval_seconds = 60
-probe_timeout_seconds = 15
+probe_timeout_seconds = 30
 repair_cooldown_seconds = 300
 state_dir = "~/.fix-my-claw"
 log_file = "~/.fix-my-claw/fix-my-claw.log"
@@ -12,13 +12,21 @@ state_dir = "~/.openclaw"
 workspace_dir = "~/.openclaw/workspace"
 health_args = ["gateway", "health", "--json"]
 status_args = ["gateway", "status", "--json"]
-logs_args = ["logs", "--tail", "200"]
+logs_args = ["logs", "--limit", "200", "--plain"]
 
 [repair]
 enabled = true
 session_control_enabled = true
 session_active_minutes = 30
 session_agents = ["macs-orchestrator", "macs-builder", "macs-architect", "macs-research"]
+soft_pause_enabled = true
+pause_message = '''
+[CONTROL]
+Action: PAUSE
+Reason: fix-my-claw detected an unhealthy state and is preserving the current task before stronger recovery.
+Expectation: ACK once, then stay paused until further instruction.
+'''
+pause_wait_seconds = 20
 terminate_message = "/stop"
 new_message = "/new"
 session_command_timeout_seconds = 120
@@ -55,7 +63,7 @@ operator_user_ids = []
 # Detect "looks healthy but stuck in multi-agent cycle/repetition" patterns from recent logs.
 enabled = true
 window_lines = 200
-probe_timeout_seconds = 15
+probe_timeout_seconds = 30
 keywords_stop = ["stop", "halt", "abort", "cancel", "terminate", "停止", "立刻停止", "强制停止", "终止", "停止指令"]
 keywords_repeat = ["repeat", "repeating", "loop", "ping-pong", "重复", "死循环", "不断", "一直在重复", "重复汇报"]
 max_repeat_same_signature = 3

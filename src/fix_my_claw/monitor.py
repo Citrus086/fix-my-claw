@@ -6,7 +6,7 @@ import time
 from .config import AppConfig
 from .health import HealthEvaluation
 from .repair import _evaluate_health, attempt_repair
-from .state import DESIRED_STATE_RUNNING, StateStore
+from .state import StateStore
 
 
 def run_check(cfg: AppConfig, store: StateStore) -> HealthEvaluation:
@@ -19,23 +19,22 @@ def run_check(cfg: AppConfig, store: StateStore) -> HealthEvaluation:
 def monitor_loop(cfg: AppConfig, store: StateStore) -> None:
     watchdog_log = logging.getLogger("fix_my_claw.watchdog")
     watchdog_log.info("starting monitor loop: interval=%ss", cfg.monitor.interval_seconds)
-    desired_state_stopped = False
+    monitor_disabled = False
     while True:
         try:
-            desired_state = store.get_desired_state()
-            if desired_state != DESIRED_STATE_RUNNING:
-                if not desired_state_stopped:
+            enabled = store.is_enabled()
+            if not enabled:
+                if not monitor_disabled:
                     watchdog_log.info(
-                        "desired_state=%s; monitor loop is idling until resumed",
-                        desired_state,
+                        "monitor is disabled; loop is idling until re-enabled",
                     )
-                    desired_state_stopped = True
+                    monitor_disabled = True
                 time.sleep(cfg.monitor.interval_seconds)
                 continue
             else:
-                if desired_state_stopped:
-                    watchdog_log.info("desired_state=running; monitor loop resumed")
-                    desired_state_stopped = False
+                if monitor_disabled:
+                    watchdog_log.info("monitor is enabled again; loop resumed")
+                    monitor_disabled = False
             evaluation = run_check(cfg, store)
             if not evaluation.effective_healthy:
                 anomaly_triggered = bool(evaluation.anomaly_guard and evaluation.anomaly_guard.get("triggered"))

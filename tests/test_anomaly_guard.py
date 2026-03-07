@@ -75,7 +75,7 @@ def _make_health_evaluation(
         status_probe = _make_probe("status")
     if logs_probe is None:
         logs_probe = _make_cmd_result(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             exit_code=0,
             stdout="logs",
         )
@@ -108,6 +108,15 @@ def _make_official_steps_result(
 
 
 class TestAnomalyGuardConfigCompat(unittest.TestCase):
+    def test_defaults_match_current_openclaw_cli(self) -> None:
+        cfg = config_module.AppConfig()
+        self.assertEqual(cfg.monitor.probe_timeout_seconds, 30)
+        self.assertEqual(cfg.anomaly_guard.probe_timeout_seconds, 30)
+        self.assertEqual(cfg.openclaw.logs_args, ["logs", "--limit", "200", "--plain"])
+        self.assertTrue(cfg.repair.soft_pause_enabled)
+        self.assertEqual(cfg.repair.pause_wait_seconds, 20)
+        self.assertIn("Action: PAUSE", cfg.repair.pause_message)
+
     def test_legacy_loop_guard_key_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cfg_path = Path(td) / "config.toml"
@@ -279,7 +288,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -310,7 +319,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -339,7 +348,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -367,7 +376,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -402,7 +411,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -435,7 +444,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -470,7 +479,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -508,7 +517,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -549,7 +558,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -591,7 +600,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -632,7 +641,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -666,7 +675,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -696,7 +705,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -731,7 +740,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -761,7 +770,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -792,7 +801,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ]
         )
         log_result = runtime_module.CmdResult(
-            argv=["openclaw", "logs", "--tail", "200"],
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
             cwd=None,
             exit_code=0,
             duration_ms=1,
@@ -970,11 +979,16 @@ class TestNotifyDecision(unittest.TestCase):
 
 
 class TestStateStoreAiRateLimit(unittest.TestCase):
-    def test_desired_state_defaults_to_running_and_persists(self) -> None:
+    def test_monitor_enabled_defaults_to_true_and_persists(self) -> None:
         store = state_module.StateStore(Path(tempfile.mkdtemp()))
-        self.assertEqual(store.get_desired_state(), state_module.DESIRED_STATE_RUNNING)
-        store.set_desired_state(state_module.DESIRED_STATE_STOPPED)
-        self.assertEqual(store.get_desired_state(), state_module.DESIRED_STATE_STOPPED)
+        self.assertTrue(store.is_enabled())
+        store.set_enabled(False)
+        self.assertFalse(store.is_enabled())
+
+    def test_legacy_desired_state_is_still_accepted_in_state_file(self) -> None:
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        store.path.write_text(json.dumps({"desired_state": "stopped"}), encoding="utf-8")
+        self.assertFalse(store.is_enabled())
 
     def test_can_attempt_ai_resets_last_ai_ts_on_day_rollover(self) -> None:
         store = state_module.StateStore(Path(tempfile.mkdtemp()))
@@ -1015,7 +1029,7 @@ class TestStateStoreAiRateLimit(unittest.TestCase):
 class TestRepairFlow(unittest.TestCase):
     def _cfg(self) -> config_module.AppConfig:
         return config_module.AppConfig(
-            repair=config_module.RepairConfig(enabled=True, official_steps=[]),
+            repair=config_module.RepairConfig(enabled=True, official_steps=[], soft_pause_enabled=False),
             notify=config_module.NotifyConfig(ask_enable_ai=True),
             ai=config_module.AiConfig(enabled=True, allow_code_changes=False),
         )
@@ -1075,6 +1089,96 @@ class TestRepairFlow(unittest.TestCase):
             self.assertIsInstance(outcome.stages[2].payload, repair_module.OfficialRepairStageData)
             self.assertEqual(result.details.get("official_break_reason"), "healthy")
             self.assertEqual(result.details.get("reason"), "anomaly_guard")
+
+    def test_attempt_repair_recovers_after_soft_pause_before_hard_reset(self) -> None:
+        cfg = config_module.AppConfig(
+            repair=config_module.RepairConfig(
+                enabled=True,
+                official_steps=[],
+                soft_pause_enabled=True,
+                pause_wait_seconds=7,
+            ),
+            notify=config_module.NotifyConfig(ask_enable_ai=True),
+            ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
+        )
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        pause_command = {
+            "agent": "macs-orchestrator",
+            "session_id": "s-1",
+            "argv": ["openclaw", "agent"],
+            "exit_code": 0,
+            "duration_ms": 1,
+            "stdout_path": "/tmp/pause.stdout",
+            "stderr_path": "/tmp/pause.stderr",
+        }
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[pause_command]
+        ), patch.object(
+            repair_module, "_run_official_steps"
+        ) as official_mock, patch.object(
+            repair_module,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=True),
+            ],
+        ), patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ), patch.object(
+            repair_module.time, "sleep", return_value=None
+        ) as sleep_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.attempted)
+            self.assertTrue(result.fixed)
+            official_mock.assert_not_called()
+            self.assertIsNotNone(result.outcome)
+            outcome = result.outcome
+            if outcome is None:
+                self.fail("expected typed repair outcome")
+            self.assertEqual([stage.name for stage in outcome.stages], ["pause", "pause_check"])
+            self.assertIn("pause_stage", result.details)
+            self.assertEqual(result.details.get("pause_wait_seconds"), 7)
+            sleep_mock.assert_called_once_with(7)
+
+    def test_attempt_repair_skips_soft_pause_when_status_probe_failed(self) -> None:
+        cfg = config_module.AppConfig(
+            repair=config_module.RepairConfig(enabled=True, official_steps=[], soft_pause_enabled=True),
+            notify=config_module.NotifyConfig(ask_enable_ai=True),
+            ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
+        )
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        failed_status = _make_probe("status", exit_code=1, stdout="", json_data=None)
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module,
+            "_run_session_command_stage",
+            side_effect=[
+                [{"agent": "macs-orchestrator", "argv": ["openclaw"], "exit_code": 0, "duration_ms": 1, "stdout_path": "a", "stderr_path": "b"}],
+                [],
+            ],
+        ) as stage_mock, patch.object(
+            repair_module,
+            "_run_official_steps",
+            return_value=_make_official_steps_result(effective_healthy=True, break_reason="healthy"),
+        ), patch.object(
+            repair_module,
+            "_evaluate_health",
+            return_value=_make_health_evaluation(
+                effective_healthy=False,
+                probe_healthy=False,
+                reason="probe_failed",
+                status_probe=failed_status,
+            ),
+        ), patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ):
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.fixed)
+            self.assertIsNotNone(result.outcome)
+            outcome = result.outcome
+            if outcome is None:
+                self.fail("expected typed repair outcome")
+            self.assertEqual([stage.name for stage in outcome.stages], ["terminate", "new", "official"])
+            self.assertEqual([call.kwargs["stage_name"] for call in stage_mock.call_args_list], ["terminate", "new"])
 
     def test_timeout_never_runs_ai(self) -> None:
         cfg = self._cfg()
@@ -1308,7 +1412,12 @@ class TestRepairFlow(unittest.TestCase):
 
     def test_attempt_repair_waits_between_terminate_and_new_stage(self) -> None:
         cfg = config_module.AppConfig(
-            repair=config_module.RepairConfig(enabled=True, official_steps=[], session_stage_wait_seconds=2),
+            repair=config_module.RepairConfig(
+                enabled=True,
+                official_steps=[],
+                soft_pause_enabled=False,
+                session_stage_wait_seconds=2,
+            ),
             notify=config_module.NotifyConfig(ask_enable_ai=True),
             ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
@@ -1464,7 +1573,7 @@ class TestCliCommands(unittest.TestCase):
         self.assertFalse(payload["healthy"])
         self.assertEqual(payload["reason"], evaluation.reason)
 
-    def test_cmd_start_and_stop_update_desired_state_and_emit_json(self) -> None:
+    def test_cmd_start_and_stop_update_enabled_flag_and_emit_json(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cfg = config_module.AppConfig(monitor=config_module.MonitorConfig(state_dir=Path(td)))
             start_args = argparse.Namespace(config="ignored.toml", json=True)
@@ -1478,10 +1587,10 @@ class TestCliCommands(unittest.TestCase):
 
             self.assertEqual(code, 0)
             start_payload = json.loads(stdout.getvalue())
-            self.assertEqual(start_payload["desired_state"], state_module.DESIRED_STATE_RUNNING)
+            self.assertTrue(start_payload["enabled"])
 
             store = state_module.StateStore(Path(td))
-            self.assertEqual(store.get_desired_state(), state_module.DESIRED_STATE_RUNNING)
+            self.assertTrue(store.is_enabled())
 
             stdout = io.StringIO()
             with patch.object(cli, "_load_or_init_config", return_value=cfg), patch.object(
@@ -1491,14 +1600,14 @@ class TestCliCommands(unittest.TestCase):
 
             self.assertEqual(code, 0)
             stop_payload = json.loads(stdout.getvalue())
-            self.assertEqual(stop_payload["desired_state"], state_module.DESIRED_STATE_STOPPED)
-            self.assertEqual(store.get_desired_state(), state_module.DESIRED_STATE_STOPPED)
+            self.assertFalse(stop_payload["enabled"])
+            self.assertFalse(store.is_enabled())
 
-    def test_cmd_status_reports_desired_state(self) -> None:
+    def test_cmd_status_reports_enabled_flag(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cfg = config_module.AppConfig(monitor=config_module.MonitorConfig(state_dir=Path(td)))
             store = state_module.StateStore(Path(td))
-            store.set_desired_state(state_module.DESIRED_STATE_STOPPED)
+            store.set_enabled(False)
             args = argparse.Namespace(config="ignored.toml", json=True)
             stdout = io.StringIO()
 
@@ -1510,7 +1619,7 @@ class TestCliCommands(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(stdout.getvalue())
         self.assertTrue(payload["config_exists"])
-        self.assertEqual(payload["desired_state"], state_module.DESIRED_STATE_STOPPED)
+        self.assertFalse(payload["enabled"])
 
     def test_cmd_repair_uses_force_flag_and_emits_json(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1542,16 +1651,16 @@ class TestCliCommands(unittest.TestCase):
         )
         lock.release.assert_called_once()
 
-    def test_cmd_up_marks_desired_state_running_before_monitor(self) -> None:
+    def test_cmd_up_enables_monitoring_before_monitor(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cfg = config_module.AppConfig(monitor=config_module.MonitorConfig(state_dir=Path(td)))
             args = argparse.Namespace(config="ignored.toml")
             lock = Mock()
             lock.acquire.return_value = True
-            observed_states: list[str] = []
+            observed_enabled: list[bool] = []
 
             def _fake_monitor_loop(_cfg: config_module.AppConfig, store: state_module.StateStore) -> None:
-                observed_states.append(store.get_desired_state())
+                observed_enabled.append(store.is_enabled())
 
             with patch.object(cli, "_load_or_init_config", return_value=cfg), patch.object(
                 cli, "setup_logging"
@@ -1563,12 +1672,12 @@ class TestCliCommands(unittest.TestCase):
                 code = cli.cmd_up(args)
 
         self.assertEqual(code, 0)
-        self.assertEqual(observed_states, [state_module.DESIRED_STATE_RUNNING])
+        self.assertEqual(observed_enabled, [True])
         lock.release.assert_called_once()
 
 
 class TestMonitorLoop(unittest.TestCase):
-    def test_monitor_loop_idles_when_desired_state_is_stopped(self) -> None:
+    def test_monitor_loop_idles_when_monitoring_is_disabled(self) -> None:
         class StopLoop(Exception):
             pass
 
@@ -1580,7 +1689,7 @@ class TestMonitorLoop(unittest.TestCase):
                 )
             )
             store = state_module.StateStore(Path(td))
-            store.set_desired_state(state_module.DESIRED_STATE_STOPPED)
+            store.set_enabled(False)
 
             with patch.object(monitor, "run_check") as run_check_mock, patch.object(
                 monitor, "attempt_repair"

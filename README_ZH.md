@@ -12,7 +12,7 @@
 ## ✨ 效果与亮点
 
 - 🩹 **自动自愈**：检测到异常后自动执行修复步骤。
-- 🧱 **分层修复**：先命令级终止会话，再发 `/new`，再执行官方结构修复步骤。
+- 🧱 **分层修复**：会话仍可达时先尝试软暂停 `PAUSE` 保留现场；只有仍异常时才升级到 `/stop`、`/new` 和官方结构修复。
 - 🔁 **异常守卫**：可从近期日志识别“探针健康但 Agent 在重复/ping-pong”的异常。
 - 🔔 **人工确认开关**：支持通过 Discord 通知并回复 `yes/no` 决定是否启用 Codex 修复。
 - 🧾 **好排障**：每次异常会在 `~/.fix-my-claw/attempts/` 下保存带时间戳的现场产物。
@@ -66,9 +66,9 @@ fix-my-claw up
 ## 🧰 常用命令
 
 ```bash
-fix-my-claw start   # 设为 desired_state=running；已运行的 monitor 会恢复工作
-fix-my-claw stop    # 设为 desired_state=stopped；monitor 会进入 idle
-fix-my-claw status  # 查看 desired_state 和持久化状态
+fix-my-claw start   # 开启监控；已运行的 monitor 会恢复工作
+fix-my-claw stop    # 关闭监控；monitor 会进入 idle
+fix-my-claw status  # 查看监控是否开启以及持久化状态
 fix-my-claw up      # 自动生成默认配置（如不存在）+ 启动常驻监控
 fix-my-claw check   # 单次探测
 fix-my-claw repair  # 单次修复尝试
@@ -83,15 +83,18 @@ flowchart TD
   A["定时器 / 常驻循环"] --> B["health 探测"]
   B --> C["status 探测"]
   C -->|健康| D["sleep"]
-  C -->|不健康| E["命令级终止(/stop)"]
-  E --> F["重建上下文(/new)"]
-  F --> G["官方修复步骤"]
-  G --> H{"恢复了吗？"}
-  H -->|是| D
-  H -->|否| I["通知并询问 yes/no"]
-  I -->|yes| J["先备份 ~/.openclaw 再执行 Codex 修复"]
-  I -->|no| D
-  J --> D
+  C -->|不健康| E["会话可达时先发送 PAUSE"]
+  E --> F{"复检后恢复了吗？"}
+  F -->|是| D
+  F -->|否| G["命令级终止(/stop)"]
+  G --> H["重建上下文(/new)"]
+  H --> I["官方修复步骤"]
+  I --> J{"恢复了吗？"}
+  J -->|是| D
+  J -->|否| K["通知并询问 yes/no"]
+  K -->|yes| L["先备份 ~/.openclaw 再执行 Codex 修复"]
+  K -->|no| D
+  L --> D
 ```
 
 ## ⚙️ 配置
@@ -107,7 +110,7 @@ flowchart TD
 - 说明：流程状态通知始终会发送；`yes/no` 询问仅在 `ai.enabled = true` 时生效。
 - 说明：当 `notify.target` 指向频道（`channel:...`）时，yes/no 需要在消息里 `@` 当前通知账号（如 `@fix-my-claw yes`）。
 - 说明：只接受严格回复 `是/否/yes/no`；不匹配会重问，累计 3 次不匹配则本轮默认不启用 Codex。
-- 扩展：`[repair]` 新增会话控制参数（`/stop`、`/new`、活跃会话筛选）。
+- 扩展：`[repair]` 新增会话控制参数（软暂停 `PAUSE`、`/stop`、`/new`、活跃会话筛选）。
 - 兼容：仍支持旧键名 `[loop_guard]`。
 - 推荐优先使用 `min_cycle_repeated_turns` 和 `max_cycle_period`；旧键 `min_ping_pong_turns` 仍作为兼容别名接受。
 - 低新颖度停滞检测可通过 `stagnation_enabled`、`stagnation_min_events`、`stagnation_min_roles`、`stagnation_max_novel_cluster_ratio` 调整。
@@ -152,10 +155,6 @@ source .venv/bin/activate
 pip install -e .
 
 ./deploy/launchd/install.sh --fix-my-claw-bin "$(command -v fix-my-claw)"
-# 如果 install.sh 写入的是 ~/.zshrc：
-source ~/.zshrc
-# 如果 install.sh 写入的是 ~/.bashrc：
-source ~/.bashrc
 ```
 
 如果你已经把 `fix-my-claw` 装在别的位置，也可以显式传入那个绝对路径：
@@ -166,8 +165,9 @@ source ~/.bashrc
 
 行为：
 
-- 安装时如果 gateway 已在运行，会立即拉起 watchdog
-- `openclaw gateway start` / `restart` / `stop`：shell hook 会按 gateway 实际状态重新对齐 watchdog
+- 安装时会立即开启监控并启动 launchd job。
+- `fix-my-claw start` 表示打开监控。
+- `fix-my-claw stop` 表示关闭监控。launchd job 仍会保留并进入 idle；如需彻底卸载，请手动 `bootout` 或执行卸载脚本。
 
 如果后面虚拟环境路径变了，先按需重新执行 `pip install -e .`，再重新执行 `deploy/launchd/install.sh`。
 
@@ -178,8 +178,9 @@ source ~/.bashrc
 ```bash
 source .venv/bin/activate
 git pull
-pip install -e .
 ```
+
+通常这样就够了。只有在打包元数据、console script 或虚拟环境路径发生变化时，才需要再执行一次 `pip install -e .`。
 
 如果你用的是普通安装（`pip install .`）：
 
@@ -197,7 +198,7 @@ pip install .
 ./deploy/launchd/uninstall.sh
 ```
 
-如需保留 shell hook：
+如需跳过旧版 rc 注入块清理：
 
 ```bash
 ./deploy/launchd/uninstall.sh --keep-hook
@@ -209,7 +210,7 @@ pip install .
 # 查看状态
 launchctl print "gui/$(id -u)/com.fix-my-claw.monitor"
 
-# 停止/卸载
+# 彻底卸载 launchd job
 launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.fix-my-claw.monitor.plist
 ```
 

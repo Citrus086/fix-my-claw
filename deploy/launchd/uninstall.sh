@@ -9,8 +9,8 @@ Usage:
   ./deploy/launchd/uninstall.sh [--keep-hook] [--rc-file <path>]
 
 Options:
-  --keep-hook    Keep shell hook block in rc file
-  --rc-file      Target rc file for hook removal (default: detect from current shell)
+  --keep-hook    Keep legacy rc block instead of removing it
+  --rc-file      Target rc file for legacy block removal (default: detect from current shell)
   -h, --help
 EOF
 }
@@ -89,10 +89,10 @@ if [[ $REMOVE_HOOK -eq 1 ]]; then
       !skip {print}
     ' "$RC_FILE" > "$tmp"
     mv "$tmp" "$RC_FILE"
-    echo "removed shell hook from: $RC_FILE"
+    echo "removed legacy rc block from: $RC_FILE"
     echo "reload shell config: source \"$RC_FILE\""
   else
-    echo "shell hook not found in: $RC_FILE"
+    echo "legacy rc block not found in: $RC_FILE"
   fi
 fi
 

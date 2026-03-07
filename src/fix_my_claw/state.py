@@ -11,14 +11,17 @@ from typing import Any
 from .shared import ensure_dir
 
 LOCK_INITIALIZING_GRACE_SECONDS = 2.0
-DESIRED_STATE_RUNNING = "running"
-DESIRED_STATE_STOPPED = "stopped"
+MONITOR_ENABLED_DEFAULT = True
 
 
-def _normalize_desired_state(value: Any) -> str:
-    if str(value).strip().lower() == DESIRED_STATE_STOPPED:
-        return DESIRED_STATE_STOPPED
-    return DESIRED_STATE_RUNNING
+def _normalize_enabled(value: Any, *, legacy_desired_state: Any = None) -> bool:
+    if value is None and legacy_desired_state is not None:
+        value = str(legacy_desired_state).strip().lower() != "stopped"
+    if value is None:
+        return MONITOR_ENABLED_DEFAULT
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "off", "disabled", "no", "stopped"}
 
 
 @dataclass
@@ -137,7 +140,7 @@ def _today_ymd() -> str:
 
 @dataclass
 class State:
-    desired_state: str = DESIRED_STATE_RUNNING
+    enabled: bool = MONITOR_ENABLED_DEFAULT
     last_ok_ts: int | None = None
     last_repair_ts: int | None = None
     last_ai_ts: int | None = None
@@ -146,7 +149,7 @@ class State:
 
     def to_json(self) -> dict:
         return {
-            "desired_state": self.desired_state,
+            "enabled": self.enabled,
             "last_ok_ts": self.last_ok_ts,
             "last_repair_ts": self.last_repair_ts,
             "last_ai_ts": self.last_ai_ts,
@@ -157,7 +160,7 @@ class State:
     @staticmethod
     def from_json(d: dict) -> "State":
         s = State()
-        s.desired_state = _normalize_desired_state(d.get("desired_state"))
+        s.enabled = _normalize_enabled(d.get("enabled"), legacy_desired_state=d.get("desired_state"))
         s.last_ok_ts = d.get("last_ok_ts")
         s.last_repair_ts = d.get("last_repair_ts")
         s.last_ai_ts = d.get("last_ai_ts")
@@ -258,15 +261,15 @@ class StateStore:
 
         self._with_lock(_update)
 
-    def get_desired_state(self) -> str:
-        return self.load().desired_state
+    def is_enabled(self) -> bool:
+        return self.load().enabled
 
-    def set_desired_state(self, desired_state: str) -> State:
-        normalized = _normalize_desired_state(desired_state)
+    def set_enabled(self, enabled: bool) -> State:
+        normalized = _normalize_enabled(enabled)
 
         def _update() -> State:
             s = self._load_unlocked()
-            s.desired_state = normalized
+            s.enabled = normalized
             self._save_unlocked(s)
             return State.from_json(s.to_json())
 

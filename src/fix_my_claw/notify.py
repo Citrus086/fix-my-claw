@@ -8,13 +8,7 @@ from typing import Any
 
 from .config import AppConfig
 from .runtime import run_cmd
-from .shared import _parse_json_maybe, redact_text
-
-
-def _write_attempt_file(dir_: Path, name: str, content: str) -> Path:
-    p = dir_ / name
-    p.write_text(content, encoding="utf-8")
-    return p
+from .shared import _parse_json_maybe, _write_attempt_file, redact_text
 
 
 def _notify_send(cfg: AppConfig, text: str, *, silent: bool | None = None) -> dict[str, Any]:
@@ -194,7 +188,7 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
         return {"asked": False, "decision": "skip"}
     max_invalid_replies = 3
     prompt = (
-        "fix-my-claw: 已执行命令级终止 + /new + 官方结构修复，当前仍异常。"
+        "fix-my-claw: 已执行分层修复（必要时含 PAUSE 复检、/stop、/new 与官方结构修复），当前仍异常。"
         f"是否启用 Codex 修复？请 @{cfg.notify.account} 回复 是/否（Please answer with yes/no）。"
         "（回复 yes/是 将先备份整个 ~/.openclaw 到其上级目录）"
     )
