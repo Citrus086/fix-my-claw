@@ -28,10 +28,12 @@ A plug-and-play watchdog for OpenClaw — keep it healthy automatically.
 
 ## 🚀 Quick start
 
+Run the commands below from the repository root.
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install .
+pip install -e .
 
 fix-my-claw up
 ```
@@ -47,9 +49,28 @@ Default paths:
 - Python 3.9+
 - OpenClaw installed and available as `openclaw` in `PATH`
 
+## 📦 Install and update model
+
+The only supported CLI entrypoint is `fix-my-claw` (package entrypoint `fix_my_claw.cli:main`).
+Do not depend on `fix_my_claw.core`.
+
+Recommended workflows:
+
+- Working from this repo: use `pip install -e .`
+- Frozen install for deployment: use `pip install .`
+
+Update rules:
+
+- If you installed with `pip install -e .`, normal source edits are picked up immediately.
+- If you installed with `pip install .`, rerun `pip install .` after pulling new commits.
+- If packaging metadata or console-script wiring changes, rerunning the install command is always safe.
+
 ## 🧰 Commands
 
 ```bash
+fix-my-claw start   # set desired_state=running; active monitor loops resume
+fix-my-claw stop    # set desired_state=stopped; monitor loops idle
+fix-my-claw status  # show desired_state and persisted state
 fix-my-claw up      # init (if needed) + monitor
 fix-my-claw check   # one-time probe
 fix-my-claw repair  # one-time recovery attempt
@@ -105,6 +126,10 @@ Two options in `deploy/systemd/`:
 Example (Option A):
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install .
+
 sudo mkdir -p /etc/fix-my-claw
 sudo cp examples/fix-my-claw.toml /etc/fix-my-claw/config.toml
 
@@ -114,16 +139,28 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now fix-my-claw.service
 ```
 
+Notes:
+
+- The rendered unit stores the absolute path from `--fix-my-claw-bin`.
+- If your virtualenv path changes, rerun `deploy/systemd/install.sh`.
+
 ## 🍎 Run it on macOS (launchd)
 
-One-click install (single entrypoint):
+Recommended setup from the repository root:
 
 ```bash
-./deploy/launchd/install.sh
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+./deploy/launchd/install.sh --fix-my-claw-bin "$(command -v fix-my-claw)"
+# If install.sh targeted ~/.zshrc:
 source ~/.zshrc
+# If install.sh targeted ~/.bashrc:
+source ~/.bashrc
 ```
 
-If `fix-my-claw` is not resolvable from your shell, pass it explicitly:
+If you already installed `fix-my-claw` elsewhere, pass that absolute binary path explicitly:
 
 ```bash
 ./deploy/launchd/install.sh --fix-my-claw-bin "$(command -v fix-my-claw)"
@@ -133,6 +170,28 @@ Behavior:
 
 - If gateway is already running during install, watchdog starts immediately
 - `openclaw gateway start` / `restart` / `stop`: shell hook re-syncs watchdog to actual gateway state
+
+If the virtualenv path changes later, rerun `pip install -e .` if needed and then rerun `deploy/launchd/install.sh`.
+
+## ⬆️ Updating after `git pull`
+
+Editable install (`pip install -e .`):
+
+```bash
+source .venv/bin/activate
+git pull
+pip install -e .
+```
+
+Frozen install (`pip install .`):
+
+```bash
+source .venv/bin/activate
+git pull
+pip install .
+```
+
+For both modes, if the `fix-my-claw` binary path changed, rerun the matching `deploy/systemd/install.sh` or `deploy/launchd/install.sh`.
 
 One-click uninstall:
 

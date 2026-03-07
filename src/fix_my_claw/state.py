@@ -11,6 +11,14 @@ from typing import Any
 from .shared import ensure_dir
 
 LOCK_INITIALIZING_GRACE_SECONDS = 2.0
+DESIRED_STATE_RUNNING = "running"
+DESIRED_STATE_STOPPED = "stopped"
+
+
+def _normalize_desired_state(value: Any) -> str:
+    if str(value).strip().lower() == DESIRED_STATE_STOPPED:
+        return DESIRED_STATE_STOPPED
+    return DESIRED_STATE_RUNNING
 
 
 @dataclass
@@ -129,6 +137,7 @@ def _today_ymd() -> str:
 
 @dataclass
 class State:
+    desired_state: str = DESIRED_STATE_RUNNING
     last_ok_ts: int | None = None
     last_repair_ts: int | None = None
     last_ai_ts: int | None = None
@@ -137,6 +146,7 @@ class State:
 
     def to_json(self) -> dict:
         return {
+            "desired_state": self.desired_state,
             "last_ok_ts": self.last_ok_ts,
             "last_repair_ts": self.last_repair_ts,
             "last_ai_ts": self.last_ai_ts,
@@ -147,6 +157,7 @@ class State:
     @staticmethod
     def from_json(d: dict) -> "State":
         s = State()
+        s.desired_state = _normalize_desired_state(d.get("desired_state"))
         s.last_ok_ts = d.get("last_ok_ts")
         s.last_repair_ts = d.get("last_repair_ts")
         s.last_ai_ts = d.get("last_ai_ts")
@@ -246,3 +257,17 @@ class StateStore:
             self._save_unlocked(s)
 
         self._with_lock(_update)
+
+    def get_desired_state(self) -> str:
+        return self.load().desired_state
+
+    def set_desired_state(self, desired_state: str) -> State:
+        normalized = _normalize_desired_state(desired_state)
+
+        def _update() -> State:
+            s = self._load_unlocked()
+            s.desired_state = normalized
+            self._save_unlocked(s)
+            return State.from_json(s.to_json())
+
+        return self._with_lock(_update)

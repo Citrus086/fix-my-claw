@@ -28,7 +28,10 @@ This change adds a generalized **anomaly guard** so fix-my-claw can detect and r
 
 ## Files Updated
 
-- `src/fix_my_claw/core.py`
+- `src/fix_my_claw/anomaly_guard.py`
+- `src/fix_my_claw/config.py`
+- `src/fix_my_claw/monitor.py`
+- `src/fix_my_claw/repair.py`
 - `examples/fix-my-claw.toml`
 - `README.md`
 - `README_ZH.md`

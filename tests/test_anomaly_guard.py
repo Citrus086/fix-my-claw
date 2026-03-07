@@ -13,10 +13,12 @@ from unittest.mock import Mock, patch
 from fix_my_claw import anomaly_guard as anomaly_guard_module
 from fix_my_claw import cli
 from fix_my_claw import config as config_module
-from fix_my_claw import core
+from fix_my_claw import health as health_module
 from fix_my_claw import monitor
 from fix_my_claw import notify as notify_module
 from fix_my_claw import repair as repair_module
+from fix_my_claw import runtime as runtime_module
+from fix_my_claw import shared as shared_module
 from fix_my_claw import state as state_module
 
 
@@ -26,8 +28,8 @@ def _make_cmd_result(
     exit_code: int = 0,
     stdout: str = "",
     stderr: str = "",
-) -> core.CmdResult:
-    return core.CmdResult(
+) -> runtime_module.CmdResult:
+    return runtime_module.CmdResult(
         argv=argv or ["openclaw"],
         cwd=None,
         exit_code=exit_code,
@@ -44,8 +46,8 @@ def _make_probe(
     stdout: str = "{}",
     stderr: str = "",
     json_data: dict | list | None = None,
-) -> core.Probe:
-    return core.Probe(
+) -> health_module.Probe:
+    return health_module.Probe(
         name=name,
         cmd=_make_cmd_result(
             argv=["openclaw", "gateway", name, "--json"],
@@ -63,10 +65,10 @@ def _make_health_evaluation(
     probe_healthy: bool = True,
     anomaly_guard: dict | None = None,
     reason: str | None = None,
-    health_probe: core.Probe | None = None,
-    status_probe: core.Probe | None = None,
-    logs_probe: core.CmdResult | None = None,
-) -> core.HealthEvaluation:
+    health_probe: health_module.Probe | None = None,
+    status_probe: health_module.Probe | None = None,
+    logs_probe: runtime_module.CmdResult | None = None,
+) -> health_module.HealthEvaluation:
     if health_probe is None:
         health_probe = _make_probe("health", exit_code=0 if probe_healthy else 1, stdout="{}" if probe_healthy else "")
     if status_probe is None:
@@ -77,7 +79,7 @@ def _make_health_evaluation(
             exit_code=0,
             stdout="logs",
         )
-    return core.HealthEvaluation(
+    return health_module.HealthEvaluation(
         health_probe=health_probe,
         status_probe=status_probe,
         logs_probe=logs_probe,
@@ -93,7 +95,7 @@ def _make_official_steps_result(
     effective_healthy: bool,
     break_reason: str | None = None,
     anomaly_guard: dict | None = None,
-) -> tuple[list[dict], core.HealthEvaluation, str]:
+) -> tuple[list[dict], health_module.HealthEvaluation, str]:
     return (
         [],
         _make_health_evaluation(
@@ -127,7 +129,7 @@ max_repeat_same_signature = 9
 """.strip(),
                 encoding="utf-8",
             )
-            cfg = core.load_config(str(cfg_path))
+            cfg = config_module.load_config(str(cfg_path))
             self.assertTrue(cfg.anomaly_guard.enabled)
             self.assertEqual(cfg.anomaly_guard.min_cycle_repeated_turns, 7)
             self.assertEqual(cfg.anomaly_guard.min_ping_pong_turns, 7)
@@ -145,7 +147,7 @@ max_cycle_period = 6
 """.strip(),
                 encoding="utf-8",
             )
-            cfg = core.load_config(str(cfg_path))
+            cfg = config_module.load_config(str(cfg_path))
             self.assertTrue(cfg.anomaly_guard.enabled)
             self.assertEqual(cfg.anomaly_guard.min_cycle_repeated_turns, 5)
             self.assertEqual(cfg.anomaly_guard.min_ping_pong_turns, 5)
@@ -165,7 +167,7 @@ stagnation_max_novel_cluster_ratio = 0.4
 """.strip(),
                 encoding="utf-8",
             )
-            cfg = core.load_config(str(cfg_path))
+            cfg = config_module.load_config(str(cfg_path))
             self.assertTrue(cfg.anomaly_guard.stagnation_enabled)
             self.assertEqual(cfg.anomaly_guard.stagnation_min_events, 7)
             self.assertEqual(cfg.anomaly_guard.stagnation_min_roles, 3)
@@ -220,12 +222,12 @@ stagnation_max_novel_cluster_ratio = 0.4
 
 class TestAnomalyGuardBehavior(unittest.TestCase):
     def test_run_check_marks_unhealthy_when_anomaly_triggered(self) -> None:
-        cfg = core.AppConfig()
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        cfg = config_module.AppConfig()
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
 
-        ok_probe = core.Probe(
+        ok_probe = health_module.Probe(
             name="health",
-            cmd=core.CmdResult(
+            cmd=runtime_module.CmdResult(
                 argv=["openclaw", "gateway", "health", "--json"],
                 cwd=None,
                 exit_code=0,
@@ -235,9 +237,9 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             ),
             json_data={},
         )
-        status_probe = core.Probe(
+        status_probe = health_module.Probe(
             name="status",
-            cmd=core.CmdResult(
+            cmd=runtime_module.CmdResult(
                 argv=["openclaw", "gateway", "status", "--json"],
                 cwd=None,
                 exit_code=0,
@@ -255,14 +257,14 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             "_analyze_anomaly_guard",
             return_value={"triggered": True, "signals": {"ping_pong_trigger": True}},
         ):
-            result = core.run_check(cfg, store)
+            result = monitor.run_check(cfg, store)
             self.assertFalse(result.healthy)
             self.assertIsNotNone(result.anomaly_guard)
             self.assertTrue(result.anomaly_guard["triggered"])
 
     def test_detector_triggers_on_ping_pong_pattern(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=2,
@@ -276,7 +278,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "builder: stop now, repeating implementation status",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -292,8 +294,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertEqual(info["metrics"]["cycle_repeated_turns"], 2)
 
     def test_detector_triggers_on_ping_pong_without_stop_signal(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=2,
@@ -307,7 +309,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "builder: repeating dispatch plan",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -320,9 +322,38 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertTrue(info["signals"]["ping_pong_trigger"])
         self.assertTrue(info["signals"]["cycle_trigger"])
 
+    def test_detector_triggers_on_bracket_prefixed_ping_pong_pattern(self) -> None:
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=2,
+            )
+        )
+        log_text = "\n".join(
+            [
+                "[builder] ping",
+                "[orchestrator] pong",
+                "[builder] ping",
+                "[orchestrator] pong",
+            ]
+        )
+        log_result = runtime_module.CmdResult(
+            argv=["openclaw", "logs", "--tail", "200"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=log_text,
+            stderr="",
+        )
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["ping_pong_trigger"])
+        self.assertEqual(info["metrics"]["events_analyzed"], 4)
+
     def test_detector_does_not_treat_progress_sequence_as_repeat(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=3,
                 min_cycle_repeated_turns=99,
@@ -335,7 +366,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "builder: progress batch 3 completed",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -350,8 +381,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertFalse(info["signals"]["cycle_trigger"])
 
     def test_detector_triggers_on_similarity_repeat_for_single_agent(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=99,
@@ -370,7 +401,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "builder: implementing order service endpoint gamma",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -386,8 +417,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertEqual(info["metrics"]["top_similar_group"]["role"], "builder")
 
     def test_detector_triggers_on_architect_research_cycle(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=2,
@@ -403,7 +434,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "research: collect API migration constraints",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -419,8 +450,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertEqual(info["metrics"]["cycle_event"]["involved_roles"], ["architect", "research"])
 
     def test_detector_triggers_on_three_role_cycle(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=3,
@@ -438,7 +469,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "architect: review deploy checklist constraints",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -457,8 +488,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         )
 
     def test_detector_output_exposes_structured_detector_findings(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=3,
@@ -476,7 +507,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "architect: review deploy checklist constraints",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -493,8 +524,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertEqual(len(cycle_detector["evidence"]), 6)
 
     def test_detector_triggers_on_four_role_cycle_with_noise(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=4,
@@ -517,7 +548,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "research: verify release checklist assumptions",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -536,8 +567,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         )
 
     def test_detector_triggers_on_low_novelty_stagnation_without_cycle(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=99,
@@ -559,7 +590,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "builder: schema mismatch remains unresolved",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -577,8 +608,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertAlmostEqual(info["metrics"]["stagnation_event"]["novel_cluster_ratio"], 1 / 6, places=4)
 
     def test_stagnation_detector_does_not_trigger_on_diverse_recent_window(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=99,
@@ -600,7 +631,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "builder: update rollback procedure",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -613,8 +644,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertIsNone(info["metrics"]["stagnation_event"])
 
     def test_similarity_repeat_does_not_mix_different_roles(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=99,
@@ -634,7 +665,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "builder: drafting migration plan delta",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -647,8 +678,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertFalse(info["signals"]["similar_repeat_trigger"])
 
     def test_auto_dispatch_requires_unexpected_post_handoff_speaker_streak(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=99,
@@ -664,7 +695,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "orchestrator: still driving the implementation after handoff",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -682,8 +713,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertEqual(info["metrics"]["auto_dispatch_event"]["unexpected_line_index"], 2)
 
     def test_auto_dispatch_does_not_trigger_on_role_mentions_without_streak(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=99,
@@ -699,7 +730,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "user: architect will review once coding is done",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -712,8 +743,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertFalse(info["signals"]["auto_dispatch_trigger"])
 
     def test_auto_dispatch_supports_research_as_handoff_target(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=99,
@@ -729,7 +760,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "architect: still producing validation notes after handoff",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -743,8 +774,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertEqual(info["metrics"]["auto_dispatch_event"]["target_role"], "research")
 
     def test_auto_dispatch_supports_timestamped_log_prefixes(self) -> None:
-        cfg = core.AppConfig(
-            anomaly_guard=core.AnomalyGuardConfig(
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
                 enabled=True,
                 max_repeat_same_signature=99,
                 min_cycle_repeated_turns=99,
@@ -760,7 +791,7 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
                 "2026-03-06 12:00:02 orchestrator: continuing after the handoff",
             ]
         )
-        log_result = core.CmdResult(
+        log_result = runtime_module.CmdResult(
             argv=["openclaw", "logs", "--tail", "200"],
             cwd=None,
             exit_code=0,
@@ -783,8 +814,8 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
 
 class TestNotifyDecision(unittest.TestCase):
     def test_extract_ai_decision_respects_operator_filter(self) -> None:
-        cfg = core.AppConfig(
-            notify=core.NotifyConfig(
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
                 target="user:u1",
                 operator_user_ids=["u1"],
             )
@@ -802,8 +833,8 @@ class TestNotifyDecision(unittest.TestCase):
         self.assertIsNone(notify_module._extract_ai_decision(cfg, bot_msg))
 
     def test_extract_ai_decision_requires_mention_for_channel_target(self) -> None:
-        cfg = core.AppConfig(
-            notify=core.NotifyConfig(
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
                 account="fix-my-claw",
                 target="channel:123",
             )
@@ -837,8 +868,8 @@ class TestNotifyDecision(unittest.TestCase):
         )
 
     def test_ask_user_enable_ai_stops_after_three_invalid_replies(self) -> None:
-        cfg = core.AppConfig(
-            notify=core.NotifyConfig(
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
                 account="fix-my-claw",
                 target="channel:1479011917367476347",
                 ask_enable_ai=True,
@@ -881,8 +912,8 @@ class TestNotifyDecision(unittest.TestCase):
             self.assertEqual(notify_mock.call_count, 3)
 
     def test_ask_user_enable_ai_advances_last_seen_by_batch_max_id(self) -> None:
-        cfg = core.AppConfig(
-            notify=core.NotifyConfig(
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
                 account="fix-my-claw",
                 target="channel:1479011917367476347",
                 ask_enable_ai=True,
@@ -893,7 +924,7 @@ class TestNotifyDecision(unittest.TestCase):
         attempt_dir = Path(tempfile.mkdtemp())
         after_ids: list[str | None] = []
 
-        def _read_side_effect(_cfg: core.AppConfig, *, after_id: str | None = None) -> list[dict]:
+        def _read_side_effect(_cfg: config_module.AppConfig, *, after_id: str | None = None) -> list[dict]:
             after_ids.append(after_id)
             if len(after_ids) == 1:
                 # Return out-of-order IDs; next poll should still advance to max("10", "9") => "10".
@@ -917,14 +948,14 @@ class TestNotifyDecision(unittest.TestCase):
             self.assertEqual(after_ids, ["m-ask", "10"])
 
     def test_notify_read_messages_uses_read_timeout(self) -> None:
-        cfg = core.AppConfig(
-            notify=core.NotifyConfig(
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
                 send_timeout_seconds=5,
                 read_timeout_seconds=33,
             )
         )
         payload = {"payload": {"messages": [{"id": "m1"}]}}
-        cmd = core.CmdResult(
+        cmd = runtime_module.CmdResult(
             argv=["openclaw", "message", "read"],
             cwd=None,
             exit_code=0,
@@ -939,10 +970,16 @@ class TestNotifyDecision(unittest.TestCase):
 
 
 class TestStateStoreAiRateLimit(unittest.TestCase):
+    def test_desired_state_defaults_to_running_and_persists(self) -> None:
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        self.assertEqual(store.get_desired_state(), state_module.DESIRED_STATE_RUNNING)
+        store.set_desired_state(state_module.DESIRED_STATE_STOPPED)
+        self.assertEqual(store.get_desired_state(), state_module.DESIRED_STATE_STOPPED)
+
     def test_can_attempt_ai_resets_last_ai_ts_on_day_rollover(self) -> None:
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
         store.save(
-            core.State(
+            state_module.State(
                 last_ai_ts=1_000,
                 ai_attempts_day="2026-03-05",
                 ai_attempts_count=1,
@@ -958,9 +995,9 @@ class TestStateStoreAiRateLimit(unittest.TestCase):
         self.assertIsNone(state.last_ai_ts)
 
     def test_mark_ok_preserves_existing_ai_tracking_fields(self) -> None:
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
         store.save(
-            core.State(
+            state_module.State(
                 last_ai_ts=1_000,
                 ai_attempts_day="2026-03-06",
                 ai_attempts_count=2,
@@ -976,19 +1013,19 @@ class TestStateStoreAiRateLimit(unittest.TestCase):
 
 
 class TestRepairFlow(unittest.TestCase):
-    def _cfg(self) -> core.AppConfig:
-        return core.AppConfig(
-            repair=core.RepairConfig(enabled=True, official_steps=[]),
-            notify=core.NotifyConfig(ask_enable_ai=True),
-            ai=core.AiConfig(enabled=True, allow_code_changes=False),
+    def _cfg(self) -> config_module.AppConfig:
+        return config_module.AppConfig(
+            repair=config_module.RepairConfig(enabled=True, official_steps=[]),
+            notify=config_module.NotifyConfig(ask_enable_ai=True),
+            ai=config_module.AiConfig(enabled=True, allow_code_changes=False),
         )
 
-    def _cmd_ok(self) -> core.CmdResult:
-        return core.CmdResult(argv=["codex"], cwd=None, exit_code=0, duration_ms=1, stdout="", stderr="")
+    def _cmd_ok(self) -> runtime_module.CmdResult:
+        return runtime_module.CmdResult(argv=["codex"], cwd=None, exit_code=0, duration_ms=1, stdout="", stderr="")
 
     def test_yes_runs_backup_then_ai(self) -> None:
         cfg = self._cfg()
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
         with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
             repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
@@ -1009,14 +1046,14 @@ class TestRepairFlow(unittest.TestCase):
         ) as ai_mock, patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
         ):
-            result = core.attempt_repair(cfg, store, force=True, reason=None)
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertTrue(result.used_ai)
             backup_mock.assert_called_once()
             ai_mock.assert_called_once()
 
     def test_attempt_repair_exposes_typed_stage_pipeline(self) -> None:
         cfg = self._cfg()
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
         with patch.object(repair_module, "_collect_context", return_value={"healthy": True}), patch.object(
             repair_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
         ), patch.object(
@@ -1028,7 +1065,7 @@ class TestRepairFlow(unittest.TestCase):
         ), patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
         ):
-            result = core.attempt_repair(cfg, store, force=True, reason="anomaly_guard")
+            result = repair_module.attempt_repair(cfg, store, force=True, reason="anomaly_guard")
             self.assertIsNotNone(result.outcome)
             outcome = result.outcome
             if outcome is None:
@@ -1041,7 +1078,7 @@ class TestRepairFlow(unittest.TestCase):
 
     def test_timeout_never_runs_ai(self) -> None:
         cfg = self._cfg()
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
         with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
             repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
@@ -1060,17 +1097,17 @@ class TestRepairFlow(unittest.TestCase):
         ) as ai_mock, patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
         ):
-            result = core.attempt_repair(cfg, store, force=True, reason=None)
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertFalse(result.used_ai)
             ai_mock.assert_not_called()
 
     def test_ai_disabled_still_notifies_but_skips_yes_no_and_ai_flow(self) -> None:
-        cfg = core.AppConfig(
-            repair=core.RepairConfig(enabled=True, official_steps=[]),
-            notify=core.NotifyConfig(ask_enable_ai=True),
-            ai=core.AiConfig(enabled=False, allow_code_changes=False),
+        cfg = config_module.AppConfig(
+            repair=config_module.RepairConfig(enabled=True, official_steps=[]),
+            notify=config_module.NotifyConfig(ask_enable_ai=True),
+            ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
         with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
             repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
@@ -1089,19 +1126,19 @@ class TestRepairFlow(unittest.TestCase):
         ) as ai_mock, patch.object(
             repair_module, "_notify_send"
         ) as notify_mock:
-            result = core.attempt_repair(cfg, store, force=True, reason=None)
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertFalse(result.used_ai)
             ask_mock.assert_not_called()
             ai_mock.assert_not_called()
             self.assertEqual(notify_mock.call_count, 2)
 
     def test_ai_rate_limit_skips_ask_and_ai(self) -> None:
-        cfg = core.AppConfig(
-            repair=core.RepairConfig(enabled=True, official_steps=[]),
-            notify=core.NotifyConfig(ask_enable_ai=True),
-            ai=core.AiConfig(enabled=True, allow_code_changes=False, max_attempts_per_day=0),
+        cfg = config_module.AppConfig(
+            repair=config_module.RepairConfig(enabled=True, official_steps=[]),
+            notify=config_module.NotifyConfig(ask_enable_ai=True),
+            ai=config_module.AiConfig(enabled=True, allow_code_changes=False, max_attempts_per_day=0),
         )
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
         with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
             repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
@@ -1120,7 +1157,7 @@ class TestRepairFlow(unittest.TestCase):
         ) as ai_mock, patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
         ):
-            result = core.attempt_repair(cfg, store, force=True, reason=None)
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertFalse(result.used_ai)
             self.assertEqual(result.details.get("ai_decision", {}).get("decision"), "rate_limited")
             ask_mock.assert_not_called()
@@ -1130,17 +1167,17 @@ class TestRepairFlow(unittest.TestCase):
         attempt_dir = Path(tempfile.mkdtemp())
         evaluation = _make_health_evaluation(
             effective_healthy=True,
-            health_probe=core.Probe(
+            health_probe=health_module.Probe(
                 name="health",
-                cmd=core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="h", stderr=""),
+                cmd=runtime_module.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="h", stderr=""),
                 json_data={},
             ),
-            status_probe=core.Probe(
+            status_probe=health_module.Probe(
                 name="status",
-                cmd=core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="s", stderr=""),
+                cmd=runtime_module.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="s", stderr=""),
                 json_data={},
             ),
-            logs_probe=core.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="l", stderr=""),
+            logs_probe=runtime_module.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="l", stderr=""),
         )
         before = repair_module._collect_context(evaluation, attempt_dir, stage_name="before")
         after = repair_module._collect_context(evaluation, attempt_dir, stage_name="after_official")
@@ -1149,8 +1186,8 @@ class TestRepairFlow(unittest.TestCase):
         self.assertTrue(Path(after["logs"]["stdout_path"]).exists())
 
     def test_attempt_dir_is_unique_even_with_same_timestamp(self) -> None:
-        cfg = core.AppConfig(
-            monitor=core.MonitorConfig(
+        cfg = config_module.AppConfig(
+            monitor=config_module.MonitorConfig(
                 state_dir=Path(tempfile.mkdtemp()),
                 log_file=Path(tempfile.mkdtemp()) / "fix-my-claw.log",
             )
@@ -1164,22 +1201,22 @@ class TestRepairFlow(unittest.TestCase):
 
     def test_attempt_repair_does_not_consume_cooldown_when_attempt_dir_creation_fails(self) -> None:
         state_dir = Path(tempfile.mkdtemp())
-        cfg = core.AppConfig(
-            monitor=core.MonitorConfig(
+        cfg = config_module.AppConfig(
+            monitor=config_module.MonitorConfig(
                 state_dir=state_dir,
                 log_file=state_dir / "fix-my-claw.log",
             )
         )
-        store = core.StateStore(state_dir)
+        store = state_module.StateStore(state_dir)
         with patch.object(repair_module, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)), patch.object(
             repair_module, "_attempt_dir", side_effect=RuntimeError("boom")
         ):
             with self.assertRaisesRegex(RuntimeError, "boom"):
-                core.attempt_repair(cfg, store, force=False, reason=None)
+                repair_module.attempt_repair(cfg, store, force=False, reason=None)
         self.assertIsNone(store.load().last_repair_ts)
 
     def test_run_official_steps_skips_empty_step_at_runtime(self) -> None:
-        cfg = core.AppConfig(repair=core.RepairConfig(official_steps=[[], ["openclaw", "gateway", "restart"]]))
+        cfg = config_module.AppConfig(repair=config_module.RepairConfig(official_steps=[[], ["openclaw", "gateway", "restart"]]))
         attempt_dir = Path(tempfile.mkdtemp())
         with patch.object(repair_module, "run_cmd", return_value=self._cmd_ok()) as run_cmd_mock, patch.object(
             repair_module, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)
@@ -1193,12 +1230,12 @@ class TestRepairFlow(unittest.TestCase):
             run_cmd_mock.assert_called_once()
 
     def test_attempt_repair_does_not_skip_anomaly_only_unhealthy_state(self) -> None:
-        cfg = core.AppConfig(
-            repair=core.RepairConfig(enabled=True, official_steps=[]),
-            notify=core.NotifyConfig(ask_enable_ai=True),
-            ai=core.AiConfig(enabled=False, allow_code_changes=False),
+        cfg = config_module.AppConfig(
+            repair=config_module.RepairConfig(enabled=True, official_steps=[]),
+            notify=config_module.NotifyConfig(ask_enable_ai=True),
+            ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
         with patch.object(
             repair_module,
             "_evaluate_health",
@@ -1221,13 +1258,13 @@ class TestRepairFlow(unittest.TestCase):
         ) as official_mock, patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
         ):
-            result = core.attempt_repair(cfg, store, force=True, reason=None)
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertTrue(result.attempted)
             self.assertTrue(result.fixed)
             official_mock.assert_called_once()
 
     def test_run_ai_repair_writes_stage_scoped_logs(self) -> None:
-        cfg = core.AppConfig()
+        cfg = config_module.AppConfig()
         attempt_dir = Path(tempfile.mkdtemp())
         with patch.object(repair_module, "run_cmd", return_value=self._cmd_ok()):
             repair_module._run_ai_repair(cfg, attempt_dir, code_stage=False)
@@ -1236,14 +1273,14 @@ class TestRepairFlow(unittest.TestCase):
         self.assertTrue((attempt_dir / "ai.code.stdout.txt").exists())
 
     def test_session_stage_does_not_depend_on_notify_target(self) -> None:
-        cfg = core.AppConfig(
-            repair=core.RepairConfig(
+        cfg = config_module.AppConfig(
+            repair=config_module.RepairConfig(
                 session_control_enabled=True,
                 session_agents=["macs-orchestrator"],
                 session_active_minutes=30,
                 terminate_message="/stop",
             ),
-            notify=core.NotifyConfig(
+            notify=config_module.NotifyConfig(
                 channel="discord",
                 target="channel:another-target",
             ),
@@ -1270,12 +1307,12 @@ class TestRepairFlow(unittest.TestCase):
             run_cmd_mock.assert_called_once()
 
     def test_attempt_repair_waits_between_terminate_and_new_stage(self) -> None:
-        cfg = core.AppConfig(
-            repair=core.RepairConfig(enabled=True, official_steps=[], session_stage_wait_seconds=2),
-            notify=core.NotifyConfig(ask_enable_ai=True),
-            ai=core.AiConfig(enabled=False, allow_code_changes=False),
+        cfg = config_module.AppConfig(
+            repair=config_module.RepairConfig(enabled=True, official_steps=[], session_stage_wait_seconds=2),
+            notify=config_module.NotifyConfig(ask_enable_ai=True),
+            ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
-        store = core.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(Path(tempfile.mkdtemp()))
         with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
             repair_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
         ), patch.object(
@@ -1292,16 +1329,16 @@ class TestRepairFlow(unittest.TestCase):
         ), patch.object(
             repair_module.time, "sleep", return_value=None
         ) as sleep_mock:
-            core.attempt_repair(cfg, store, force=True, reason=None)
+            repair_module.attempt_repair(cfg, store, force=True, reason=None)
             sleep_mock.assert_called_once_with(2)
 
 
 class TestHealthDetailsAndLogging(unittest.TestCase):
     def test_evaluate_health_returns_probe_failure_reason(self) -> None:
-        cfg = core.AppConfig()
-        failed_probe = core.Probe(
+        cfg = config_module.AppConfig()
+        failed_probe = health_module.Probe(
             name="health",
-            cmd=core.CmdResult(
+            cmd=runtime_module.CmdResult(
                 argv=["openclaw", "gateway", "health", "--json"],
                 cwd=None,
                 exit_code=1,
@@ -1311,9 +1348,9 @@ class TestHealthDetailsAndLogging(unittest.TestCase):
             ),
             json_data=None,
         )
-        ok_probe = core.Probe(
+        ok_probe = health_module.Probe(
             name="status",
-            cmd=core.CmdResult(
+            cmd=runtime_module.CmdResult(
                 argv=["openclaw", "gateway", "status", "--json"],
                 cwd=None,
                 exit_code=0,
@@ -1335,13 +1372,13 @@ class TestHealthDetailsAndLogging(unittest.TestCase):
 
     def test_setup_logging_creates_private_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            cfg = core.AppConfig(
-                monitor=core.MonitorConfig(
+            cfg = config_module.AppConfig(
+                monitor=config_module.MonitorConfig(
                     state_dir=Path(td),
                     log_file=Path(td) / "fix-my-claw.log",
                 )
             )
-            core.setup_logging(cfg)
+            shared_module.setup_logging(cfg)
             mode = os.stat(cfg.monitor.log_file).st_mode & 0o777
             self.assertEqual(mode & 0o077, 0)
 
@@ -1396,7 +1433,7 @@ class TestFileLockSafety(unittest.TestCase):
 
 class TestCliCommands(unittest.TestCase):
     def test_with_single_instance_returns_2_when_lock_is_held(self) -> None:
-        cfg = core.AppConfig()
+        cfg = config_module.AppConfig()
         lock = Mock()
         lock.acquire.return_value = False
         stderr = io.StringIO()
@@ -1410,7 +1447,7 @@ class TestCliCommands(unittest.TestCase):
 
     def test_cmd_check_returns_failure_and_json_for_unhealthy_result(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            cfg = core.AppConfig(monitor=core.MonitorConfig(state_dir=Path(td)))
+            cfg = config_module.AppConfig(monitor=config_module.MonitorConfig(state_dir=Path(td)))
             args = argparse.Namespace(config="ignored.toml", json=True)
             evaluation = _make_health_evaluation(effective_healthy=False)
             stdout = io.StringIO()
@@ -1427,9 +1464,57 @@ class TestCliCommands(unittest.TestCase):
         self.assertFalse(payload["healthy"])
         self.assertEqual(payload["reason"], evaluation.reason)
 
+    def test_cmd_start_and_stop_update_desired_state_and_emit_json(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = config_module.AppConfig(monitor=config_module.MonitorConfig(state_dir=Path(td)))
+            start_args = argparse.Namespace(config="ignored.toml", json=True)
+            stop_args = argparse.Namespace(config="ignored.toml", json=True)
+
+            stdout = io.StringIO()
+            with patch.object(cli, "_load_or_init_config", return_value=cfg), patch.object(
+                cli, "setup_logging"
+            ), patch("sys.stdout", new=stdout):
+                code = cli.cmd_start(start_args)
+
+            self.assertEqual(code, 0)
+            start_payload = json.loads(stdout.getvalue())
+            self.assertEqual(start_payload["desired_state"], state_module.DESIRED_STATE_RUNNING)
+
+            store = state_module.StateStore(Path(td))
+            self.assertEqual(store.get_desired_state(), state_module.DESIRED_STATE_RUNNING)
+
+            stdout = io.StringIO()
+            with patch.object(cli, "_load_or_init_config", return_value=cfg), patch.object(
+                cli, "setup_logging"
+            ), patch("sys.stdout", new=stdout):
+                code = cli.cmd_stop(stop_args)
+
+            self.assertEqual(code, 0)
+            stop_payload = json.loads(stdout.getvalue())
+            self.assertEqual(stop_payload["desired_state"], state_module.DESIRED_STATE_STOPPED)
+            self.assertEqual(store.get_desired_state(), state_module.DESIRED_STATE_STOPPED)
+
+    def test_cmd_status_reports_desired_state(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = config_module.AppConfig(monitor=config_module.MonitorConfig(state_dir=Path(td)))
+            store = state_module.StateStore(Path(td))
+            store.set_desired_state(state_module.DESIRED_STATE_STOPPED)
+            args = argparse.Namespace(config="ignored.toml", json=True)
+            stdout = io.StringIO()
+
+            with patch.object(cli, "_load_config_or_default", return_value=(cfg, True)), patch.object(
+                cli, "setup_logging"
+            ), patch("sys.stdout", new=stdout):
+                code = cli.cmd_status(args)
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["config_exists"])
+        self.assertEqual(payload["desired_state"], state_module.DESIRED_STATE_STOPPED)
+
     def test_cmd_repair_uses_force_flag_and_emits_json(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            cfg = core.AppConfig(monitor=core.MonitorConfig(state_dir=Path(td)))
+            cfg = config_module.AppConfig(monitor=config_module.MonitorConfig(state_dir=Path(td)))
             args = argparse.Namespace(config="ignored.toml", force=True, json=True)
             result = Mock()
             result.fixed = True
@@ -1450,27 +1535,76 @@ class TestCliCommands(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(stdout.getvalue()), {"fixed": True})
         self.assertEqual(attempt_repair_mock.call_args.args[0], cfg)
-        self.assertIsInstance(attempt_repair_mock.call_args.args[1], core.StateStore)
+        self.assertIsInstance(attempt_repair_mock.call_args.args[1], state_module.StateStore)
         self.assertEqual(
             attempt_repair_mock.call_args.kwargs,
             {"force": True, "reason": None},
         )
         lock.release.assert_called_once()
 
+    def test_cmd_up_marks_desired_state_running_before_monitor(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = config_module.AppConfig(monitor=config_module.MonitorConfig(state_dir=Path(td)))
+            args = argparse.Namespace(config="ignored.toml")
+            lock = Mock()
+            lock.acquire.return_value = True
+            observed_states: list[str] = []
+
+            def _fake_monitor_loop(_cfg: config_module.AppConfig, store: state_module.StateStore) -> None:
+                observed_states.append(store.get_desired_state())
+
+            with patch.object(cli, "_load_or_init_config", return_value=cfg), patch.object(
+                cli, "setup_logging"
+            ), patch.object(
+                cli, "FileLock", return_value=lock
+            ), patch.object(
+                cli, "monitor_loop", side_effect=_fake_monitor_loop
+            ):
+                code = cli.cmd_up(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(observed_states, [state_module.DESIRED_STATE_RUNNING])
+        lock.release.assert_called_once()
+
 
 class TestMonitorLoop(unittest.TestCase):
+    def test_monitor_loop_idles_when_desired_state_is_stopped(self) -> None:
+        class StopLoop(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg = config_module.AppConfig(
+                monitor=config_module.MonitorConfig(
+                    state_dir=Path(td),
+                    interval_seconds=1,
+                )
+            )
+            store = state_module.StateStore(Path(td))
+            store.set_desired_state(state_module.DESIRED_STATE_STOPPED)
+
+            with patch.object(monitor, "run_check") as run_check_mock, patch.object(
+                monitor, "attempt_repair"
+            ) as attempt_repair_mock, patch.object(
+                monitor.time, "sleep", side_effect=StopLoop
+            ):
+                with self.assertRaises(StopLoop):
+                    monitor.monitor_loop(cfg, store)
+
+        run_check_mock.assert_not_called()
+        attempt_repair_mock.assert_not_called()
+
     def test_monitor_loop_attempts_repair_once_for_anomaly_guard(self) -> None:
         class StopLoop(Exception):
             pass
 
         with tempfile.TemporaryDirectory() as td:
-            cfg = core.AppConfig(
-                monitor=core.MonitorConfig(
+            cfg = config_module.AppConfig(
+                monitor=config_module.MonitorConfig(
                     state_dir=Path(td),
                     interval_seconds=1,
                 )
             )
-            store = core.StateStore(Path(td))
+            store = state_module.StateStore(Path(td))
             evaluation = _make_health_evaluation(
                 effective_healthy=False,
                 anomaly_guard={"triggered": True, "signals": ["ping_pong"]},
@@ -1489,7 +1623,7 @@ class TestMonitorLoop(unittest.TestCase):
                 monitor.time, "sleep", side_effect=StopLoop
             ):
                 with self.assertRaises(StopLoop):
-                    core.monitor_loop(cfg, store)
+                    monitor.monitor_loop(cfg, store)
 
         attempt_repair_mock.assert_called_once_with(
             cfg,

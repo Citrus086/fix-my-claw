@@ -26,10 +26,12 @@
 
 ## 🚀 快速开始
 
+以下命令默认都在仓库根目录执行。
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install .
+pip install -e .
 
 fix-my-claw up
 ```
@@ -45,9 +47,28 @@ fix-my-claw up
 - Python 3.9+
 - 已安装 OpenClaw，并且 `openclaw` 可在 `PATH` 中直接调用
 
+## 📦 安装方式与升级规则
+
+唯一受支持的 CLI 入口是 `fix-my-claw`，它对应的包入口为 `fix_my_claw.cli:main`。
+不要依赖 `fix_my_claw.core`。
+
+推荐两种安装方式：
+
+- 跟着当前仓库开发/调试：`pip install -e .`
+- 固化部署：`pip install .`
+
+更新规则：
+
+- 如果你用的是 `pip install -e .`，普通源码改动会直接生效。
+- 如果你用的是 `pip install .`，每次拉新代码后都要重新执行一次 `pip install .`。
+- 如果改到了打包元数据或 console script，重新执行安装命令总是安全的。
+
 ## 🧰 常用命令
 
 ```bash
+fix-my-claw start   # 设为 desired_state=running；已运行的 monitor 会恢复工作
+fix-my-claw stop    # 设为 desired_state=stopped；monitor 会进入 idle
+fix-my-claw status  # 查看 desired_state 和持久化状态
 fix-my-claw up      # 自动生成默认配置（如不存在）+ 启动常驻监控
 fix-my-claw check   # 单次探测
 fix-my-claw repair  # 单次修复尝试
@@ -103,6 +124,10 @@ flowchart TD
 示例（方式 A）：
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install .
+
 sudo mkdir -p /etc/fix-my-claw
 sudo cp examples/fix-my-claw.toml /etc/fix-my-claw/config.toml
 
@@ -112,17 +137,28 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now fix-my-claw.service
 ```
 
+说明：
+
+- 渲染后的 unit 会写死 `--fix-my-claw-bin` 对应的绝对路径。
+- 如果后面虚拟环境路径变了，需要重新执行一次 `deploy/systemd/install.sh`。
+
 ## 🍎 macOS 部署（launchd）
 
-一键安装（单一入口）：
+推荐在仓库(fix-my-claw)根目录这样安装：
 
 ```bash
-pip install -e 
-./deploy/launchd/install.sh
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+./deploy/launchd/install.sh --fix-my-claw-bin "$(command -v fix-my-claw)"
+# 如果 install.sh 写入的是 ~/.zshrc：
 source ~/.zshrc
+# 如果 install.sh 写入的是 ~/.bashrc：
+source ~/.bashrc
 ```
 
-如果当前 shell 里 `fix-my-claw` 解析不到，也可以显式传入：
+如果你已经把 `fix-my-claw` 装在别的位置，也可以显式传入那个绝对路径：
 
 ```bash
 ./deploy/launchd/install.sh --fix-my-claw-bin "$(command -v fix-my-claw)"
@@ -132,6 +168,28 @@ source ~/.zshrc
 
 - 安装时如果 gateway 已在运行，会立即拉起 watchdog
 - `openclaw gateway start` / `restart` / `stop`：shell hook 会按 gateway 实际状态重新对齐 watchdog
+
+如果后面虚拟环境路径变了，先按需重新执行 `pip install -e .`，再重新执行 `deploy/launchd/install.sh`。
+
+## ⬆️ `git pull` 之后怎么更新
+
+如果你用的是 editable install（`pip install -e .`）：
+
+```bash
+source .venv/bin/activate
+git pull
+pip install -e .
+```
+
+如果你用的是普通安装（`pip install .`）：
+
+```bash
+source .venv/bin/activate
+git pull
+pip install .
+```
+
+无论哪种方式，只要 `fix-my-claw` 的实际二进制路径变了，都需要重新执行对应的 `deploy/systemd/install.sh` 或 `deploy/launchd/install.sh`。
 
 一键卸载：
 

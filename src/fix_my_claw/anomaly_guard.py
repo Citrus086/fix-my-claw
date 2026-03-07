@@ -17,6 +17,7 @@ ROLE_ALIASES: dict[str, tuple[str, ...]] = {
     "research": ("research", "macs-research"),
 }
 AGENT_ROLES = frozenset({"orchestrator", "builder", "architect", "research"})
+ALL_ROLE_ALIASES = frozenset(alias for aliases in ROLE_ALIASES.values() for alias in aliases)
 
 
 @dataclass(frozen=True)
@@ -88,8 +89,18 @@ def _normalize_loop_line(line: str) -> str:
 
 def _strip_log_prefixes(line: str) -> str:
     s = line.strip().lower()
-    s = re.sub(r"^\[[^\]]+\]\s*", "", s)
-    s = re.sub(r"^\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+", "", s)
+    while True:
+        stripped = False
+        if bracket_match := re.match(r"^\[([^\]]+)\]\s*", s):
+            prefix = bracket_match.group(1).strip()
+            if prefix not in ALL_ROLE_ALIASES:
+                s = s[bracket_match.end() :]
+                stripped = True
+        if timestamp_match := re.match(r"^\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+", s):
+            s = s[timestamp_match.end() :]
+            stripped = True
+        if not stripped:
+            break
     return s
 
 
