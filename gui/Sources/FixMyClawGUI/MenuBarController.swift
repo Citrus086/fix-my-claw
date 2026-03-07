@@ -154,4 +154,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             NSApplication.AboutPanelOptionKey.applicationVersion: "0.1.0",
         ])
     }
+
+    @objc func quitWithServiceStop() {
+        manager.stopServiceThenQuit()
+    }
 }

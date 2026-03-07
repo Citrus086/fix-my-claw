@@ -650,6 +650,23 @@ class MenuBarManager: ObservableObject {
         }
         return true
     }
+
+    func stopServiceThenQuit() {
+        guard !isLoading else { return }
+
+        Task {
+            isLoading = true
+            defer { isLoading = false }
+
+            do {
+                try await cli.stopService()
+            } catch {
+                // 如果停止失败，静默退出
+            }
+
+            NSApplication.shared.terminate(nil)
+        }
+    }
 }
 
 // MARK: - Build Menu Extension
@@ -835,9 +852,10 @@ extension MenuBarManager {
 
         let quitItem = NSMenuItem(
             title: "退出",
-            action: #selector(NSApplication.terminate(_:)),
+            action: #selector(MenuBarController.quitWithServiceStop),
             keyEquivalent: "q"
         )
+        quitItem.target = NSApplication.shared.delegate as? MenuBarController
         menu.addItem(quitItem)
 
         return menu
