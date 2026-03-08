@@ -17,7 +17,7 @@
 | 1 | 建立回归测试围栏 | done | Kimi, Codex | 2026-03-08 | 2026-03-08 | passed |
 | 2 | GUI Schema Drift 修复 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 3 | 通知文本集中化 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
-| 4 | 拆出 Repair 类型层 | pending | - | - | - | - |
+| 4 | 拆出 Repair 类型层 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 5 | 拆出 Repair 执行 Helper 层 | pending | - | - | - | - |
 | 6 | 提取配置验证 Helper | pending | - | - | - | - |
 | 7 | 拆出 Stage 实现 | pending | - | - | - | - |
@@ -327,31 +327,68 @@ test_messages.py: 23 passed
 ---
 
 ### Step 4: 拆出 Repair 类型层
-执行日期:
-执行人:
-状态:
+执行日期: 2026-03-08
+执行人: Claude
+状态: done
 
 修改文件:
-- 
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair_types.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py` (更新 import，删除已迁移类型)
 
 执行内容:
-- [ ] 创建 `repair_types.py`
-- [ ] 迁移结果模型与 payload
-- [ ] 保留 `repair.py` re-export
+- [x] 创建 `repair_types.py`
+- [x] 迁移结果模型与 payload
+- [x] 保留 `repair.py` re-export
 
 命令记录:
 ```bash
-# pytest ...
+python -m pytest tests/test_anomaly_guard.py tests/test_gui_cli_support.py tests/test_messages.py -q --tb=short
+python -c "from fix_my_claw.repair import ..."  # 验证导入兼容性
 ```
 
 结果摘要:
 ```text
-# import 兼容性与测试结果
+测试结果: 106 passed
+  - test_anomaly_guard.py: 74 passed
+  - test_gui_cli_support.py: 9 passed
+  - test_messages.py: 23 passed
+
+导入兼容性验证: 通过
+  - 所有类型从 fix_my_claw.repair 导入成功
+  - 所有类型从 fix_my_claw.repair_types 直接导入成功
+
+迁移的类型清单:
+1. CommandExecutionRecord - 命令执行记录
+2. SessionStageData - Session 阶段数据
+3. PauseCheckStageData - PAUSE 检查阶段数据
+4. OfficialRepairStageData - 官方修复阶段数据
+5. AiDecision - AI 决策结果
+6. BackupArtifact - 备份产物
+7. AiRepairStageData - AI 修复阶段数据
+8. StagePayload - Stage payload 类型别名
+9. StageResult - Stage 结果
+10. RepairPipelineContext - Repair 管道上下文
+11. RepairOutcome - Repair 输出结果
+12. RepairResult - Repair 最终结果
+
+迁移的 helper 函数:
+- _records_to_json - 将执行记录转为 JSON
+- _coerce_execution_records - 将 dict 列表转为执行记录元组
+- _cmd_result_to_json - 将 CmdResult 转为 JSON
+- _require_stage_payload - 获取并验证 stage payload
+
+repair.py re-export 列表:
+- AiDecision, AiRepairStageData, BackupArtifact, CommandExecutionRecord
+- OfficialRepairStageData, PauseCheckStageData, RepairOutcome
+- RepairPipelineContext, RepairResult, SessionStageData
+- StagePayload, StageResult
+- _cmd_result_to_json, _coerce_execution_records, _records_to_json, _require_stage_payload
 ```
 
 问题记录:
+- 无阻塞问题
 
-是否可进入下一步:
+是否可进入下一步: 是，Step 4 Gate 已通过，可以开始 Step 5
 
 ---
 
