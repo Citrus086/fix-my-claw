@@ -30,6 +30,7 @@ from .messages import (
     REPAIR_RECOVERED_AFTER_PAUSE,
     REPAIR_RECOVERED_BY_OFFICIAL,
     REPAIR_STARTING,
+    REPAIR_STARTING_MANUAL,
     backup_completed,
     repair_backup_failed,
 )
@@ -354,6 +355,7 @@ def _build_repair_state_machine_hooks() -> RepairStateMachineHooks:
         ),
         messages=RepairMessageHooks(
             repair_starting_message=REPAIR_STARTING,
+            repair_starting_manual_message=REPAIR_STARTING_MANUAL,
             recovered_after_pause_message=REPAIR_RECOVERED_AFTER_PAUSE,
             recovered_by_official_message=REPAIR_RECOVERED_BY_OFFICIAL,
             ai_disabled_message=REPAIR_AI_DISABLED,

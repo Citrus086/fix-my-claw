@@ -899,6 +899,99 @@ class TestNotifyDecision(unittest.TestCase):
             "yes",
         )
 
+    def test_extract_manual_repair_command_requires_mention_and_operator_filter(self) -> None:
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
+                account=TEST_BOT_USERNAME,
+                target=f"channel:{TEST_CHANNEL_ID}",
+                operator_user_ids=["u1"],
+            )
+        )
+        plain_command = {"id": "m1", "content": "手动修复", "author": {"id": "u1", "bot": False}}
+        mentioned_command = {
+            "id": "m2",
+            "content": f"<@{TEST_BOT_USER_ID}> 手动修复",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+        content_only_command = {
+            "id": "m2b",
+            "content": f"<@{TEST_BOT_USER_ID}> 手动修复",
+            "author": {"id": "u1", "bot": False},
+        }
+        outsider_command = {
+            "id": "m3",
+            "content": f"<@{TEST_BOT_USER_ID}> 手动修复",
+            "author": {"id": "u2", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+
+        self.assertIsNone(notify_module._extract_manual_repair_command(cfg, plain_command))
+        self.assertEqual(
+            notify_module._extract_manual_repair_command(cfg, mentioned_command),
+            {
+                "command": "manual_repair",
+                "source": "discord",
+                "message_id": "m2",
+                "author_id": "u1",
+                "content": "手动修复",
+            },
+        )
+        self.assertEqual(
+            notify_module._extract_manual_repair_command(cfg, content_only_command),
+            {
+                "command": "manual_repair",
+                "source": "discord",
+                "message_id": "m2b",
+                "author_id": "u1",
+                "content": "手动修复",
+            },
+        )
+        self.assertIsNone(notify_module._extract_manual_repair_command(cfg, outsider_command))
+
+    def test_poll_manual_repair_command_advances_cursor_and_deduplicates(self) -> None:
+        state_dir = Path(tempfile.mkdtemp())
+        cfg = config_module.AppConfig(
+            monitor=config_module.MonitorConfig(
+                state_dir=state_dir,
+                log_file=state_dir / "fix-my-claw.log",
+            ),
+            notify=config_module.NotifyConfig(
+                account=TEST_BOT_USERNAME,
+                target=f"channel:{TEST_CHANNEL_ID}",
+            ),
+        )
+        after_ids: list[str | None] = []
+
+        def _read_side_effect(_cfg: config_module.AppConfig, *, after_id: str | None = None) -> list[dict]:
+            after_ids.append(after_id)
+            if len(after_ids) == 1:
+                return [
+                    {
+                        "id": "10",
+                        "content": f"<@{TEST_BOT_USER_ID}> 手动修复",
+                        "author": {"id": "u1", "bot": False},
+                        "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+                    },
+                    {
+                        "id": "9",
+                        "content": f"<@{TEST_BOT_USER_ID}> yes",
+                        "author": {"id": "u1", "bot": False},
+                        "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+                    },
+                ]
+            return []
+
+        with patch.object(notify_module, "_notify_read_messages", side_effect=_read_side_effect):
+            first = notify_module._poll_manual_repair_command(cfg)
+            second = notify_module._poll_manual_repair_command(cfg)
+
+        self.assertEqual(after_ids, [None, "10"])
+        self.assertEqual((first or {}).get("command"), "manual_repair")
+        self.assertIsNone(second)
+        cursor_payload = shared_module._read_json_file(state_dir / "notify.manual_repair.cursor.json")
+        self.assertEqual((cursor_payload or {}).get("last_seen_message_id"), "10")
+
     def test_ask_user_enable_ai_stops_after_three_invalid_replies(self) -> None:
         cfg = config_module.AppConfig(
             notify=config_module.NotifyConfig(
@@ -2408,6 +2501,42 @@ class TestMonitorLoop(unittest.TestCase):
             store,
             force=False,
             reason="anomaly_guard",
+        )
+
+    def test_monitor_loop_handles_manual_repair_command_even_when_monitoring_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = config_module.AppConfig(
+                monitor=config_module.MonitorConfig(
+                    state_dir=Path(td),
+                    interval_seconds=1,
+                )
+            )
+            store = state_module.StateStore(Path(td))
+            store.set_enabled(False)
+            repair_result = SimpleNamespace(
+                attempted=True,
+                fixed=False,
+                used_ai=False,
+                details={"attempt_dir": str(Path(td) / "attempt-1")},
+            )
+
+            with patch.object(
+                monitor,
+                "_poll_manual_repair_command",
+                side_effect=[{"command": "manual_repair", "source": "discord", "message_id": "m1", "author_id": "u1"}, None],
+            ), patch.object(
+                monitor, "attempt_repair", return_value=repair_result
+            ) as attempt_repair_mock, patch.object(
+                monitor.time, "sleep", side_effect=[None, KeyboardInterrupt]
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    monitor.monitor_loop(cfg, store)
+
+        attempt_repair_mock.assert_called_once_with(
+            cfg,
+            store,
+            force=True,
+            reason="manual_discord",
         )
 
 

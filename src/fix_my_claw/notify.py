@@ -14,10 +14,18 @@ from .shared import (
     _clear_ai_approval_request,
     _create_ai_approval_request,
     _parse_json_maybe,
+    _read_json_file,
     _read_ai_approval_decision,
+    _write_json_file,
     _write_attempt_file,
     redact_text,
 )
+
+_MANUAL_REPAIR_CURSOR_NAME = "notify.manual_repair.cursor.json"
+_MANUAL_REPAIR_COMMAND_TOKENS = frozenset({"手动修复", "manual repair", "修复", "repair"})
+_KNOWN_NOTIFY_ACCOUNT_IDS = {
+    "fixmyclaw": "1479170394580848660",
+}
 
 
 def _notify_send(cfg: AppConfig, text: str, *, silent: bool | None = None) -> dict[str, Any]:
@@ -138,6 +146,10 @@ def _message_mentions_notify_account(
     return False
 
 
+def _default_required_mention_id(cfg: AppConfig) -> str | None:
+    return _KNOWN_NOTIFY_ACCOUNT_IDS.get(_normalize_name_key(cfg.notify.account))
+
+
 def _resolve_sent_message_author_id(cfg: AppConfig, message_id: str | None) -> str | None:
     if not message_id:
         return None
@@ -202,6 +214,70 @@ def _decision_from_shared_payload(payload: dict[str, Any] | None) -> dict[str, A
     out["asked"] = True
     out["decision"] = decision
     return out
+
+
+def _manual_repair_cursor_path(state_dir: Path) -> Path:
+    return state_dir / _MANUAL_REPAIR_CURSOR_NAME
+
+
+def _read_manual_repair_cursor(state_dir: Path) -> str | None:
+    payload = _read_json_file(_manual_repair_cursor_path(state_dir))
+    if not isinstance(payload, dict):
+        return None
+    message_id = str(payload.get("last_seen_message_id", "")).strip()
+    return message_id or None
+
+
+def _write_manual_repair_cursor(state_dir: Path, *, last_seen_message_id: str | None) -> None:
+    message_id = str(last_seen_message_id or "").strip()
+    if not message_id:
+        return
+    _write_json_file(
+        _manual_repair_cursor_path(state_dir),
+        {
+            "last_seen_message_id": message_id,
+            "updated_at": time.time(),
+        },
+    )
+
+
+def _extract_manual_repair_command(
+    cfg: AppConfig, message: dict[str, Any], *, required_mention_id: str | None = None
+) -> dict[str, Any] | None:
+    required_mention_id = required_mention_id or _default_required_mention_id(cfg)
+    if not _is_ai_reply_candidate(cfg, message, required_mention_id=required_mention_id):
+        return None
+    content = _normalize_ai_reply_token(str(message.get("content", "")))
+    if content not in _MANUAL_REPAIR_COMMAND_TOKENS:
+        return None
+    author = message.get("author")
+    return {
+        "command": "manual_repair",
+        "source": "discord",
+        "message_id": str(message.get("id", "")).strip() or None,
+        "author_id": str((author or {}).get("id", "")).strip() if isinstance(author, dict) else None,
+        "content": content,
+    }
+
+
+def _poll_manual_repair_command(cfg: AppConfig) -> dict[str, Any] | None:
+    last_seen = _read_manual_repair_cursor(cfg.monitor.state_dir)
+    messages = _notify_read_messages(cfg, after_id=last_seen)
+    if not messages:
+        return None
+
+    next_last_seen = last_seen
+    matched_command: dict[str, Any] | None = None
+    for msg in messages:
+        msg_id = str(msg.get("id", "")).strip()
+        if msg_id:
+            next_last_seen = _max_message_id(next_last_seen, msg_id)
+        if matched_command is None:
+            matched_command = _extract_manual_repair_command(cfg, msg)
+
+    if next_last_seen and next_last_seen != last_seen:
+        _write_manual_repair_cursor(cfg.monitor.state_dir, last_seen_message_id=next_last_seen)
+    return matched_command
 
 
 def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:

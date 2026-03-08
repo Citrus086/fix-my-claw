@@ -5,6 +5,8 @@ import time
 
 from .config import AppConfig
 from .health import HealthEvaluation
+from .messages import manual_repair_acknowledged
+from .notify import _notify_send, _poll_manual_repair_command
 from .repair import _evaluate_health, attempt_repair
 from .state import StateStore
 
@@ -19,6 +21,55 @@ def run_check(cfg: AppConfig, store: StateStore) -> HealthEvaluation:
     return evaluation
 
 
+def _log_repair_result(watchdog_log: logging.Logger, result: object, *, prefix: str) -> None:
+    details = getattr(result, "details", {}) or {}
+    if getattr(result, "attempted", False):
+        watchdog_log.warning(
+            "%s finished: fixed=%s used_codex=%s dir=%s",
+            prefix,
+            getattr(result, "fixed", False),
+            getattr(result, "used_ai", False),
+            details.get("attempt_dir"),
+        )
+        return
+    if details.get("cooldown"):
+        remaining = details.get("cooldown_remaining_seconds")
+        watchdog_log.info(
+            "%s skipped: cooldown (%ss remaining)",
+            prefix,
+            remaining if remaining is not None else "?",
+        )
+        return
+    watchdog_log.info("%s skipped: %s", prefix, details)
+
+
+def _handle_manual_repair_request(cfg: AppConfig, store: StateStore, watchdog_log: logging.Logger) -> bool:
+    command = _poll_manual_repair_command(cfg)
+    if not command:
+        return False
+    content = command.get("content", "")
+    watchdog_log.warning(
+        "manual repair requested via %s: message_id=%s author_id=%s monitoring_enabled=%s",
+        command.get("source"),
+        command.get("message_id"),
+        command.get("author_id"),
+        store.is_enabled(),
+    )
+    # Send acknowledgment notification to Discord
+    try:
+        _notify_send(cfg, manual_repair_acknowledged(content), silent=False)
+    except Exception as exc:
+        watchdog_log.warning("failed to send manual repair acknowledgment: %s", exc)
+    result = attempt_repair(
+        cfg,
+        store,
+        force=True,
+        reason="manual_discord",
+    )
+    _log_repair_result(watchdog_log, result, prefix="manual repair")
+    return True
+
+
 def monitor_loop(cfg: AppConfig, store: StateStore) -> None:
     watchdog_log = logging.getLogger("fix_my_claw.watchdog")
     watchdog_log.info("starting monitor loop: interval=%ss", cfg.monitor.interval_seconds)
@@ -28,6 +79,10 @@ def monitor_loop(cfg: AppConfig, store: StateStore) -> None:
 
     while True:
         try:
+            if _handle_manual_repair_request(cfg, store, watchdog_log):
+                consecutive_errors = 0
+                time.sleep(cfg.monitor.interval_seconds)
+                continue
             enabled = store.is_enabled()
             if not enabled:
                 if not monitor_disabled:
@@ -65,21 +120,7 @@ def monitor_loop(cfg: AppConfig, store: StateStore) -> None:
                     force=False,
                     reason="anomaly_guard" if anomaly_triggered else None,
                 )
-                if result.attempted:
-                    watchdog_log.warning(
-                        "repair finished: fixed=%s used_codex=%s dir=%s",
-                        result.fixed,
-                        result.used_ai,
-                        result.details.get("attempt_dir"),
-                    )
-                elif result.details.get("cooldown"):
-                    remaining = result.details.get("cooldown_remaining_seconds")
-                    watchdog_log.info(
-                        "repair skipped: cooldown (%ss remaining)",
-                        remaining if remaining is not None else "?",
-                    )
-                else:
-                    watchdog_log.info("repair skipped: %s", result.details)
+                _log_repair_result(watchdog_log, result, prefix="repair")
         except Exception as exc:
             consecutive_errors += 1
             # Log with backoff info to help diagnose persistent issues

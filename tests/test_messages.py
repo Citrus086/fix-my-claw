@@ -17,11 +17,13 @@ from fix_my_claw.messages import (
     REPAIR_RECOVERED_AFTER_PAUSE,
     REPAIR_RECOVERED_BY_OFFICIAL,
     REPAIR_STARTING,
+    REPAIR_STARTING_MANUAL,
     ai_decision_no,
     ai_decision_yes,
     ask_enable_ai_prompt,
     ask_invalid_reply,
     backup_completed,
+    manual_repair_acknowledged,
     repair_backup_failed,
 )
 
@@ -74,6 +76,12 @@ class TestMessagePrefix:
     def test_ask_invalid_reply_has_prefix(self):
         assert ask_invalid_reply(2).startswith("fix-my-claw:")
 
+    def test_repair_starting_manual_has_prefix(self):
+        assert REPAIR_STARTING_MANUAL.startswith("fix-my-claw:")
+
+    def test_manual_repair_acknowledged_has_prefix(self):
+        assert manual_repair_acknowledged("修复").startswith("fix-my-claw:")
+
 
 class TestMessageContent:
     """Test message content matches expected values."""
@@ -110,6 +118,11 @@ class TestMessageContent:
         error = "disk full"
         msg = repair_backup_failed(error)
         assert error in msg
+
+    def test_manual_repair_acknowledged_includes_command(self):
+        msg = manual_repair_acknowledged("修复")
+        assert "修复" in msg
+        assert "收到手动修复命令" in msg
 
 
 class TestNoHardcodedMessagesInRepair:

@@ -81,6 +81,7 @@ class RepairRuntimeHooks:
 @dataclass(frozen=True)
 class RepairMessageHooks:
     repair_starting_message: str
+    repair_starting_manual_message: str
     recovered_after_pause_message: str
     recovered_by_official_message: str
     ai_disabled_message: str
@@ -287,9 +288,15 @@ class RepairStateMachine:
             status="running",
             attempt_dir=str(attempt_dir.resolve()),
         )
+        # Use manual repair message if triggered manually
+        start_message = (
+            self.messages.repair_starting_manual_message
+            if self.reason == "manual_discord"
+            else self.messages.repair_starting_message
+        )
         self._outcome().start_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.messages.repair_starting_message,
+            start_message,
             self.messages.notify_level_important,
             silent=False,
         )

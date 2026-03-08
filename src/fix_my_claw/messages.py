@@ -28,6 +28,11 @@ REPAIR_STARTING = (
     "（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop -> /new -> 官方结构修复）。"
 )
 
+REPAIR_STARTING_MANUAL = (
+    "fix-my-claw: 收到手动修复命令，开始分层修复"
+    "（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop -> /new -> 官方结构修复）。"
+)
+
 REPAIR_RECOVERED_AFTER_PAUSE = (
     "fix-my-claw: 已发送 PAUSE 并完成复检，系统恢复健康，跳过 /stop、/new 与结构修复。"
 )
@@ -81,3 +86,8 @@ def ask_enable_ai_prompt(account: str) -> str:
 def ask_invalid_reply(remaining: int) -> str:
     """Notification text when user sends an invalid reply."""
     return f"fix-my-claw: 未识别到有效回复。请仅回复 是/否（Please answer with yes/no）。剩余 {remaining} 次。"
+
+
+def manual_repair_acknowledged(command: str) -> str:
+    """Notification text when manual repair command is received."""
+    return f"fix-my-claw: 收到手动修复命令「{command}」，立即开始修复流程。"
