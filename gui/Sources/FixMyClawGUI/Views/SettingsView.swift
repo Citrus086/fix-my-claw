@@ -33,6 +33,8 @@ struct SettingsView: View {
                                 RepairSettingsView()
                             case .ai:
                                 AiSettingsView()
+                            case .ids:
+                                IdSettingsView()
                             case .advanced:
                                 AdvancedSettingsView()
                             }
@@ -98,6 +100,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case monitor
     case repair
     case ai
+    case ids
     case advanced
 
     var id: String { rawValue }
@@ -107,6 +110,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .monitor: return "监控"
         case .repair: return "修复"
         case .ai: return "AI"
+        case .ids: return "ID 配置"
         case .advanced: return "高级"
         }
     }
@@ -369,6 +373,110 @@ struct AdvancedSettingsView: View, ConfigBindable {
                     set: { $0.notify.askEnableAi = $1 }
                 )
             )
+        }
+    }
+}
+
+@MainActor
+struct IdSettingsView: View, ConfigBindable {
+    @EnvironmentObject var configManager: ConfigManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader(title: "Agent ID 配置", description: "用于会话控制和异常检测的 Agent ID（每行一个）")
+
+            // Session Agents
+            SectionHeader(title: "会话 Agents", description: "有权接收 /stop、/new 命令的 Agent ID 列表")
+
+            TextField(
+                "Session Agents (逗号分隔)",
+                text: binding(
+                    default: "",
+                    get: { $0.repair.sessionAgents.joined(separator: ", ") },
+                    set: { $0.repair.sessionAgents = $1.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+
+            SectionHeader(title: "Agent 角色别名", description: "用于异常检测的角色别名（每行一个别名）")
+
+            // Orchestrator
+            Text("Orchestrator")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            TextField(
+                "Orchestrator 别名",
+                text: binding(
+                    default: "",
+                    get: { $0.agentRoles.orchestrator.joined(separator: ", ") },
+                    set: { $0.agentRoles.orchestrator = $1.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+
+            // Builder
+            Text("Builder")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            TextField(
+                "Builder 别名",
+                text: binding(
+                    default: "",
+                    get: { $0.agentRoles.builder.joined(separator: ", ") },
+                    set: { $0.agentRoles.builder = $1.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+
+            // Architect
+            Text("Architect")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            TextField(
+                "Architect 别名",
+                text: binding(
+                    default: "",
+                    get: { $0.agentRoles.architect.joined(separator: ", ") },
+                    set: { $0.agentRoles.architect = $1.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+
+            // Research
+            Text("Research")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            TextField(
+                "Research 别名",
+                text: binding(
+                    default: "",
+                    get: { $0.agentRoles.research.joined(separator: ", ") },
+                    set: { $0.agentRoles.research = $1.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+
+            SectionHeader(title: "Discord 配置", description: "Discord 通知目标设置")
+
+            TextField(
+                "通知目标 (格式: channel:CHANNEL_ID 或 user:USER_ID)",
+                text: binding(
+                    default: "",
+                    get: { $0.notify.target },
+                    set: { $0.notify.target = $1 }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+
+            TextField(
+                "操作员 User IDs (逗号分隔)",
+                text: binding(
+                    default: "",
+                    get: { $0.notify.operatorUserIds.joined(separator: ", ") },
+                    set: { $0.notify.operatorUserIds = $1.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
         }
     }
 }

@@ -8,6 +8,9 @@ from .health import HealthEvaluation
 from .repair import _evaluate_health, attempt_repair
 from .state import StateStore
 
+# Constants for monitor loop behavior
+MAX_BACKOFF_SECONDS = 300  # 5 minutes max backoff on repeated errors
+
 
 def run_check(cfg: AppConfig, store: StateStore) -> HealthEvaluation:
     evaluation = _evaluate_health(cfg)
@@ -22,7 +25,6 @@ def monitor_loop(cfg: AppConfig, store: StateStore) -> None:
     monitor_disabled = False
     # Error backoff to prevent log spam on repeated failures
     consecutive_errors = 0
-    max_backoff_seconds = 300  # 5 minutes max backoff
 
     while True:
         try:
@@ -81,7 +83,7 @@ def monitor_loop(cfg: AppConfig, store: StateStore) -> None:
         except Exception as exc:
             consecutive_errors += 1
             # Log with backoff info to help diagnose persistent issues
-            backoff = min(max_backoff_seconds, cfg.monitor.interval_seconds * (2 ** min(consecutive_errors - 1, 5)))
+            backoff = min(MAX_BACKOFF_SECONDS, cfg.monitor.interval_seconds * (2 ** min(consecutive_errors - 1, 5)))
             if consecutive_errors <= 3:
                 # Log full exception for first few errors
                 watchdog_log.exception("monitor loop error (attempt %s): %s", consecutive_errors, exc)

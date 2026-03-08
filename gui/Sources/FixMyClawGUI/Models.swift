@@ -129,6 +129,7 @@ struct AppConfig: Codable {
     var anomalyGuard = AnomalyGuardConfig()
     var notify = NotifyConfig()
     var ai = AiConfig()
+    var agentRoles = AgentRolesConfig()
 
     enum CodingKeys: String, CodingKey {
         case monitor
@@ -137,6 +138,18 @@ struct AppConfig: Codable {
         case anomalyGuard = "anomaly_guard"
         case notify
         case ai
+        case agentRoles = "agent_roles"
+    }
+}
+
+struct AgentRolesConfig: Codable {
+    var orchestrator: [String] = ["orchestrator", "macs-orchestrator"]
+    var builder: [String] = ["builder", "macs-builder"]
+    var architect: [String] = ["architect", "macs-architect"]
+    var research: [String] = ["research", "macs-research"]
+
+    enum CodingKeys: String, CodingKey {
+        case orchestrator, builder, architect, research
     }
 }
 
@@ -147,6 +160,9 @@ struct MonitorConfig: Codable {
     var stateDir: String = "~/.fix-my-claw"
     var logFile: String = "~/.fix-my-claw/fix-my-claw.log"
     var logLevel: String = "INFO"
+    var logMaxBytes: Int = 5242880  // 5 MB
+    var logBackupCount: Int = 5
+    var logRetentionDays: Int = 30
 
     enum CodingKeys: String, CodingKey {
         case intervalSeconds = "interval_seconds"
@@ -155,6 +171,9 @@ struct MonitorConfig: Codable {
         case stateDir = "state_dir"
         case logFile = "log_file"
         case logLevel = "log_level"
+        case logMaxBytes = "log_max_bytes"
+        case logBackupCount = "log_backup_count"
+        case logRetentionDays = "log_retention_days"
     }
 }
 

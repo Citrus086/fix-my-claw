@@ -281,10 +281,20 @@ def _launchctl_run(*args: str, check: bool = True) -> subprocess.CompletedProces
 
 
 def _bootout_launchd_service(plist_path: Path) -> None:
+    """Boot out launchd service. Raises CalledProcessError on failure."""
     domain = _get_launchd_domain()
     label = _get_launchd_label()
-    _launchctl_run("bootout", domain, str(plist_path), check=False)
-    _launchctl_run("bootout", f"{domain}/{label}", check=False)
+    # Try domain/path format first (modern macOS)
+    result = _launchctl_run("bootout", domain, str(plist_path), check=False)
+    if result.returncode != 0:
+        # Fallback to domain/label format
+        result = _launchctl_run("bootout", f"{domain}/{label}", check=False)
+    # Raise exception if both attempts failed (service might not be loaded)
+    # Exit code 113 means "Could not find service" which is acceptable for stop/uninstall
+    if result.returncode != 0 and result.returncode != 113:
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, output=result.stdout, stderr=result.stderr
+        )
 
 
 def _service_status_payload(*, installed: bool, running: bool) -> dict[str, object]:
@@ -354,9 +364,13 @@ def cmd_service_uninstall(args: argparse.Namespace) -> int:
         return 0
     try:
         _bootout_launchd_service(plist_path)
+    except subprocess.CalledProcessError as exc:
+        print(f"error stopping service: {exc.stderr.strip() if exc.stderr else exc}", file=sys.stderr)
+        return 1
+    try:
         plist_path.unlink(missing_ok=True)
     except OSError as exc:
-        print(f"error uninstalling service: {exc}", file=sys.stderr)
+        print(f"error removing plist: {exc}", file=sys.stderr)
         return 1
     print("service uninstalled")
     return 0
@@ -390,7 +404,11 @@ def cmd_service_stop(args: argparse.Namespace) -> int:
     if not plist_path.exists():
         print("service not installed")
         return 0
-    _bootout_launchd_service(plist_path)
+    try:
+        _bootout_launchd_service(plist_path)
+    except subprocess.CalledProcessError as exc:
+        print(f"error stopping service: {exc.stderr.strip() if exc.stderr else exc}", file=sys.stderr)
+        return 1
     print("service stopped")
     return 0
 

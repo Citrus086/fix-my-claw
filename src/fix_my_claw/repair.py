@@ -338,10 +338,10 @@ def _run_official_steps(
         if not step:
             continue
         argv = [cfg.openclaw.command if step[0] == "openclaw" else step[0], *step[1:]]
-        repair_log.warning("official step %d/%d: %s", idx, total, " ".join(argv))
+        repair_log.info("official step %d/%d: %s", idx, total, " ".join(argv))
         cwd = cfg.openclaw.workspace_dir if cfg.openclaw.workspace_dir.exists() else None
         res = run_cmd(argv, timeout_seconds=cfg.repair.step_timeout_seconds, cwd=cwd)
-        repair_log.warning(
+        repair_log.info(
             "official step %d/%d done: exit=%s duration_ms=%s",
             idx,
             total,
@@ -373,7 +373,7 @@ def _run_official_steps(
         break_reason = "steps_exhausted"
         if break_on_healthy and last_evaluation.effective_healthy:
             break_reason = "healthy"
-            repair_log.warning("OpenClaw is healthy after official step %d/%d", idx, total)
+            repair_log.info("OpenClaw is healthy after official step %d/%d", idx, total)
             break
     if last_evaluation is None:
         last_evaluation = _evaluate_health(
@@ -909,7 +909,7 @@ class AiDecisionStage:
             status="completed",
             payload=payload,
             notification=(
-                _notify_send(ctx.cfg, notification_text, silent=False)
+                _notify_send_with_level(ctx.cfg, notification_text, NOTIFY_LEVEL_ALL, silent=False)
                 if notification_text is not None
                 else None
             ),
@@ -950,9 +950,10 @@ class BackupStage:
             name="backup",
             status="completed",
             payload=artifact,
-            notification=_notify_send(
+            notification=_notify_send_with_level(
                 ctx.cfg,
                 f"fix-my-claw: 已完成备份，开始 Codex 修复。备份文件：{artifact.archive}",
+                NOTIFY_LEVEL_IMPORTANT,
                 silent=False,
             ),
         )
@@ -1048,7 +1049,7 @@ def attempt_repair(
     store.mark_repair_attempt()
     ctx = RepairPipelineContext(cfg=cfg, store=store, attempt_dir=attempt_dir)
     outcome = RepairOutcome(attempt_dir=str(attempt_dir.resolve()), reason=reason)
-    repair_log.warning("starting repair attempt: dir=%s", attempt_dir.resolve())
+    repair_log.info("starting repair attempt: dir=%s", attempt_dir.resolve())
     
     # 写入初始进度
     write_repair_progress(
@@ -1057,9 +1058,10 @@ def attempt_repair(
         status="running",
         attempt_dir=str(attempt_dir.resolve()),
     )
-    outcome.start_notification = _notify_send(
+    outcome.start_notification = _notify_send_with_level(
         cfg,
         "fix-my-claw: 检测到异常，开始分层修复（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop -> /new -> 官方结构修复）。",
+        NOTIFY_LEVEL_IMPORTANT,
         silent=False,
     )
 
@@ -1073,11 +1075,12 @@ def attempt_repair(
                 pause_check_stage = outcome.add_stage(PauseAssessmentStage().run(ctx, previous_stage=pause_stage))
                 if pause_check_stage.fixed:
                     outcome.final_stage = pause_check_stage
-                    outcome.final_notification = _notify_send(
+                    outcome.final_notification = _notify_send_with_level(
                         cfg,
                         "fix-my-claw: 已发送 PAUSE 并完成复检，系统恢复健康，跳过 /stop、/new 与结构修复。",
+                        NOTIFY_LEVEL_IMPORTANT,
                     )
-                    repair_log.warning("recovered after soft pause: dir=%s", attempt_dir.resolve())
+                    repair_log.info("recovered after soft pause: dir=%s", attempt_dir.resolve())
                     clear_repair_progress(cfg.monitor.state_dir)
                     return _result_from_outcome(attempted=True, outcome=outcome)
     terminate_stage = outcome.add_stage(SessionTerminateStage().run(ctx))
@@ -1086,11 +1089,12 @@ def attempt_repair(
 
     if official_stage.fixed:
         outcome.final_stage = official_stage
-        outcome.final_notification = _notify_send(
+        outcome.final_notification = _notify_send_with_level(
             cfg,
             "fix-my-claw: 分层修复已完成，系统恢复健康，无需启用 Codex 修复。",
+            NOTIFY_LEVEL_IMPORTANT,
         )
-        repair_log.warning("recovered by official steps: dir=%s", attempt_dir.resolve())
+        repair_log.info("recovered by official steps: dir=%s", attempt_dir.resolve())
         clear_repair_progress(cfg.monitor.state_dir)
         return _result_from_outcome(attempted=True, outcome=outcome)
 
@@ -1098,9 +1102,10 @@ def attempt_repair(
         repair_log.info("Codex-assisted remediation disabled; leaving OpenClaw unhealthy")
         final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_no_ai").run(ctx))
         outcome.final_stage = final_stage
-        outcome.final_notification = _notify_send(
+        outcome.final_notification = _notify_send_with_level(
             cfg,
             "fix-my-claw: 官方修复后仍异常，且 ai.enabled=false，本轮不会发起 yes/no 与 Codex 修复，请人工介入。",
+            NOTIFY_LEVEL_IMPORTANT,
             silent=False,
         )
         clear_repair_progress(cfg.monitor.state_dir)
@@ -1118,9 +1123,10 @@ def attempt_repair(
         ))
         final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_rate_limited").run(ctx))
         outcome.final_stage = final_stage
-        outcome.final_notification = _notify_send(
+        outcome.final_notification = _notify_send_with_level(
             cfg,
             "fix-my-claw: Codex 修复被限流（每日次数或冷却期），本轮跳过。",
+            NOTIFY_LEVEL_ALL,
             silent=False,
         )
         clear_repair_progress(cfg.monitor.state_dir)
@@ -1134,9 +1140,10 @@ def attempt_repair(
         if ai_decision_stage.notification is not None:
             outcome.final_notification = ai_decision_stage.notification
         else:
-            outcome.final_notification = _notify_send(
+            outcome.final_notification = _notify_send_with_level(
                 cfg,
                 "fix-my-claw: 未收到 yes（含 no/timeout/发送失败/多次无效回复），本轮不会启用 Codex 修复。",
+                NOTIFY_LEVEL_IMPORTANT,
                 silent=False,
             )
         clear_repair_progress(cfg.monitor.state_dir)
@@ -1146,9 +1153,10 @@ def attempt_repair(
     backup_artifact = _require_stage_payload(backup_stage, BackupArtifact)
     if backup_stage.status != "completed":
         outcome.final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_backup_error").run(ctx))
-        outcome.final_notification = _notify_send(
+        outcome.final_notification = _notify_send_with_level(
             cfg,
             f"fix-my-claw: 收到 yes，但备份失败，已停止 Codex 修复。错误：{backup_artifact.error}",
+            NOTIFY_LEVEL_IMPORTANT,
             silent=False,
         )
         clear_repair_progress(cfg.monitor.state_dir)
@@ -1158,12 +1166,13 @@ def attempt_repair(
     ai_config_stage = outcome.add_stage(AiRepairStage(code_stage=False).run(ctx))
     if ai_config_stage.fixed:
         outcome.final_stage = ai_config_stage
-        outcome.final_notification = _notify_send(
+        outcome.final_notification = _notify_send_with_level(
             cfg,
             "fix-my-claw: Codex 配置阶段修复成功，系统恢复健康。",
+            NOTIFY_LEVEL_IMPORTANT,
             silent=False,
         )
-        repair_log.warning("recovered by Codex-assisted remediation: dir=%s", attempt_dir.resolve())
+        repair_log.info("recovered by Codex-assisted remediation: dir=%s", attempt_dir.resolve())
         clear_repair_progress(cfg.monitor.state_dir)
         return _result_from_outcome(attempted=True, outcome=outcome)
 
@@ -1171,20 +1180,22 @@ def attempt_repair(
         ai_code_stage = outcome.add_stage(AiRepairStage(code_stage=True).run(ctx))
         if ai_code_stage.fixed:
             outcome.final_stage = ai_code_stage
-            outcome.final_notification = _notify_send(
+            outcome.final_notification = _notify_send_with_level(
                 cfg,
                 "fix-my-claw: Codex 代码阶段修复成功，系统恢复健康。",
+                NOTIFY_LEVEL_IMPORTANT,
                 silent=False,
             )
-            repair_log.warning("recovered by code-stage remediation: dir=%s", attempt_dir.resolve())
+            repair_log.info("recovered by code-stage remediation: dir=%s", attempt_dir.resolve())
             clear_repair_progress(cfg.monitor.state_dir)
             return _result_from_outcome(attempted=True, outcome=outcome)
 
     final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final").run(ctx))
     outcome.final_stage = final_stage
-    outcome.final_notification = _notify_send(
+    outcome.final_notification = _notify_send_with_level(
         cfg,
         "fix-my-claw: 本轮修复结束，但系统仍异常，请人工介入排查。",
+        NOTIFY_LEVEL_CRITICAL,
         silent=False,
     )
     repair_log.warning(

@@ -181,20 +181,11 @@ def _claim_ai_approval_decision(
     except FileExistsError:
         return False, _read_json_file(decision_path)
 
-    # Use try-finally to ensure fd is always closed properly
-    handle = None
+    # Use context manager for clean resource handling
     try:
-        handle = os.fdopen(fd, "w", encoding="utf-8")
-        handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
-        handle.close()
-        handle = None
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
     except Exception:
-        # Close handle if it was opened but not yet closed
-        if handle is not None:
-            try:
-                handle.close()
-            except Exception:
-                pass
         # Clean up the partially written file
         decision_path.unlink(missing_ok=True)
         raise
@@ -247,8 +238,8 @@ def setup_logging(cfg: "AppConfig") -> None:
 
     file_handler = SecureRotatingFileHandler(
         cfg.monitor.log_file,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=5,
+        maxBytes=cfg.monitor.log_max_bytes,
+        backupCount=cfg.monitor.log_backup_count,
         encoding="utf-8",
     )
     try:
@@ -265,3 +256,37 @@ def setup_logging(cfg: "AppConfig") -> None:
     root.handlers.clear()
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
+
+    # Clean up old log files based on retention policy
+    try:
+        cleanup_old_logs(cfg)
+    except Exception:
+        # Don't fail logging setup if cleanup fails
+        pass
+
+
+def cleanup_old_logs(cfg: "AppConfig") -> int:
+    """Clean up log files older than the configured retention period.
+
+    Returns the number of files deleted.
+    """
+    log_dir = cfg.monitor.log_file.parent
+    log_prefix = cfg.monitor.log_file.stem
+    retention_seconds = cfg.monitor.log_retention_days * 24 * 60 * 60
+    cutoff_time = time.time() - retention_seconds
+    deleted_count = 0
+
+    if not log_dir.exists():
+        return 0
+
+    for log_file in log_dir.glob(f"{log_prefix}*"):
+        if log_file.is_file():
+            try:
+                if log_file.stat().st_mtime < cutoff_time:
+                    log_file.unlink()
+                    deleted_count += 1
+            except OSError:
+                # Skip files we can't access
+                pass
+
+    return deleted_count

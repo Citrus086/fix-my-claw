@@ -37,6 +37,49 @@ class TestConfigJsonSupport(unittest.TestCase):
         self.assertEqual(rebuilt.monitor.log_file, Path("/tmp/fix-my-claw.log").resolve())
         self.assertTrue(rebuilt.ai.enabled)
 
+    def test_agent_roles_round_trip_with_flat_structure(self) -> None:
+        """Test that agent_roles is serialized as flat structure, not nested under 'roles'."""
+        custom_roles = {
+            "orchestrator": ("orch", "my-orch"),
+            "builder": ("bld", "my-builder"),
+            "architect": ("arch",),
+            "research": ("res", "research-agent"),
+        }
+        cfg = config_module.AppConfig(
+            agent_roles=config_module.AgentRolesConfig(roles=custom_roles)
+        )
+
+        data = config_module._config_to_dict(cfg)
+
+        # Should be flat: {"orchestrator": [...], "builder": [...]}
+        # NOT nested: {"roles": {"orchestrator": [...], ...}}
+        self.assertIn("orchestrator", data["agent_roles"])
+        self.assertIn("builder", data["agent_roles"])
+        self.assertNotIn("roles", data["agent_roles"])
+
+        # Verify the values are lists (JSON serializable)
+        self.assertIsInstance(data["agent_roles"]["orchestrator"], list)
+        self.assertEqual(data["agent_roles"]["orchestrator"], ["orch", "my-orch"])
+
+        # Round-trip should preserve custom roles
+        rebuilt = config_module._dict_to_config(data)
+        self.assertEqual(rebuilt.agent_roles.roles["orchestrator"], ("orch", "my-orch"))
+        self.assertEqual(rebuilt.agent_roles.roles["builder"], ("bld", "my-builder"))
+
+    def test_agent_roles_merge_with_defaults(self) -> None:
+        """Test that partial agent_roles config merges with defaults instead of replacing."""
+        # Only override orchestrator
+        merged = config_module._parse_agent_roles({"orchestrator": ["my-orch"]})
+
+        # Custom value should be used
+        self.assertEqual(merged.roles["orchestrator"], ("my-orch",))
+
+        # Other roles should still have defaults
+        self.assertIn("builder", merged.roles)
+        self.assertIn("architect", merged.roles)
+        self.assertIn("research", merged.roles)
+        self.assertEqual(merged.roles["builder"], ("builder", "macs-builder"))
+
 
 class TestGuiCliCommands(unittest.TestCase):
     def test_cmd_config_show_emits_json_payload(self) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -10,14 +11,83 @@ from .config import AppConfig
 from .runtime import CmdResult
 from .shared import redact_text
 
-ROLE_ALIASES: dict[str, tuple[str, ...]] = {
-    "orchestrator": ("orchestrator", "macs-orchestrator"),
-    "builder": ("builder", "macs-builder"),
-    "architect": ("architect", "macs-architect"),
-    "research": ("research", "macs-research"),
-}
-AGENT_ROLES = frozenset({"orchestrator", "builder", "architect", "research"})
-ALL_ROLE_ALIASES = frozenset(alias for aliases in ROLE_ALIASES.values() for alias in aliases)
+
+def _build_role_aliases_from_config(cfg: AppConfig) -> dict[str, tuple[str, ...]]:
+    """Build ROLE_ALIASES from config, with fallback to defaults."""
+    return dict(cfg.agent_roles.roles)
+
+
+def _build_agent_roles_from_config(cfg: AppConfig) -> frozenset[str]:
+    """Build AGENT_ROLES (canonical role names) from config."""
+    return cfg.agent_roles.get_canonical_roles()
+
+
+def _build_all_aliases_from_config(cfg: AppConfig) -> frozenset[str]:
+    """Build ALL_ROLE_ALIASES (all alias strings) from config."""
+    return cfg.agent_roles.get_all_aliases()
+
+
+# Module-level caches for performance (updated when config changes)
+# Use config content hash as key instead of id() to avoid issues with object reuse
+_cached_config_hash: str | None = None
+_cached_role_aliases: dict[str, tuple[str, ...]] | None = None
+_cached_agent_roles: frozenset[str] | None = None
+_cached_all_aliases: frozenset[str] | None = None
+_cache_lock = threading.Lock()
+
+
+def _config_hash(cfg: AppConfig) -> str:
+    """Compute a hash of the agent_roles config for cache invalidation.
+    
+    Using content hash instead of id() avoids issues where Python reuses
+    memory addresses for different config objects.
+    """
+    # Hash based on agent_roles content since that's what we cache
+    roles = cfg.agent_roles.roles
+    # Sort for deterministic hash
+    items = tuple((k, tuple(sorted(v))) for k, v in sorted(roles.items()))
+    return str(hash(items))
+
+
+def _refresh_caches_if_needed(cfg: AppConfig) -> None:
+    """Refresh all caches if config has changed.
+
+    This ensures all three caches are updated atomically when the config changes,
+    preventing stale cache data from being used after a config switch.
+    """
+    global _cached_config_hash, _cached_role_aliases, _cached_agent_roles, _cached_all_aliases
+    config_hash = _config_hash(cfg)
+    with _cache_lock:
+        if _cached_config_hash != config_hash:
+            # Config changed - refresh ALL caches atomically
+            _cached_config_hash = config_hash
+            _cached_role_aliases = _build_role_aliases_from_config(cfg)
+            _cached_agent_roles = _build_agent_roles_from_config(cfg)
+            _cached_all_aliases = _build_all_aliases_from_config(cfg)
+
+
+def _get_role_aliases(cfg: AppConfig) -> dict[str, tuple[str, ...]]:
+    """Get role aliases, using cache if config hasn't changed."""
+    _refresh_caches_if_needed(cfg)
+    with _cache_lock:
+        # Cache is guaranteed to be valid after refresh
+        return _cached_role_aliases if _cached_role_aliases is not None else {}
+
+
+def _get_agent_roles(cfg: AppConfig) -> frozenset[str]:
+    """Get canonical agent roles, using cache if config hasn't changed."""
+    _refresh_caches_if_needed(cfg)
+    with _cache_lock:
+        # Cache is guaranteed to be valid after refresh
+        return _cached_agent_roles if _cached_agent_roles is not None else frozenset()
+
+
+def _get_all_aliases(cfg: AppConfig) -> frozenset[str]:
+    """Get all role aliases, using cache if config hasn't changed."""
+    _refresh_caches_if_needed(cfg)
+    with _cache_lock:
+        # Cache is guaranteed to be valid after refresh
+        return _cached_all_aliases if _cached_all_aliases is not None else frozenset()
 
 
 @dataclass(frozen=True)
@@ -87,13 +157,14 @@ def _normalize_loop_line(line: str) -> str:
     return s
 
 
-def _strip_log_prefixes(line: str) -> str:
+def _strip_log_prefixes(line: str, cfg: AppConfig) -> str:
     s = line.strip().lower()
+    all_aliases = _get_all_aliases(cfg)
     while True:
         stripped = False
         if bracket_match := re.match(r"^\[([^\]]+)\]\s*", s):
             prefix = bracket_match.group(1).strip()
-            if prefix not in ALL_ROLE_ALIASES:
+            if prefix not in all_aliases:
                 s = s[bracket_match.end() :]
                 stripped = True
         if timestamp_match := re.match(r"^\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+", s):
@@ -104,9 +175,10 @@ def _strip_log_prefixes(line: str) -> str:
     return s
 
 
-def _strip_speaker_prefix(line: str, speaker_role: str) -> str:
-    s = _strip_log_prefixes(line)
-    for alias in ROLE_ALIASES.get(speaker_role, ()):
+def _strip_speaker_prefix(line: str, speaker_role: str, cfg: AppConfig) -> str:
+    s = _strip_log_prefixes(line, cfg)
+    role_aliases = _get_role_aliases(cfg)
+    for alias in role_aliases.get(speaker_role, ()):
         prefixes = (
             f"{alias}:",
             f"{alias}：",
@@ -151,13 +223,14 @@ def _progress_markers_compatible(left: tuple[str, ...], right: tuple[str, ...]) 
     return left == right
 
 
-def _extract_events(lines: list[str]) -> list[Event]:
+def _extract_events(lines: list[str], cfg: AppConfig) -> list[Event]:
     events: list[Event] = []
+    agent_roles = _get_agent_roles(cfg)
     for idx, raw in enumerate(lines):
-        speaker_role = _extract_speaker_role(raw)
-        if speaker_role not in AGENT_ROLES:
+        speaker_role = _extract_speaker_role(raw, cfg)
+        if speaker_role not in agent_roles:
             continue
-        content_text = _strip_speaker_prefix(raw, speaker_role)
+        content_text = _strip_speaker_prefix(raw, speaker_role, cfg)
         normalized_text = _normalize_event_text(content_text or raw)
         if not normalized_text:
             continue
@@ -184,9 +257,10 @@ def _find_token_index(text: str, token: str) -> int:
     return text.find(token)
 
 
-def _extract_speaker_role(line: str) -> str | None:
-    s = _strip_log_prefixes(line)
-    for role, aliases in ROLE_ALIASES.items():
+def _extract_speaker_role(line: str, cfg: AppConfig) -> str | None:
+    s = _strip_log_prefixes(line, cfg)
+    role_aliases = _get_role_aliases(cfg)
+    for role, aliases in role_aliases.items():
         for alias in aliases:
             prefixes = (
                 f"{alias}:",
@@ -202,11 +276,12 @@ def _extract_speaker_role(line: str) -> str | None:
     return None
 
 
-def _extract_role(line: str) -> str | None:
-    speaker = _extract_speaker_role(line)
+def _extract_role(line: str, cfg: AppConfig) -> str | None:
+    speaker = _extract_speaker_role(line, cfg)
     if speaker:
         return speaker
-    for role, aliases in ROLE_ALIASES.items():
+    role_aliases = _get_role_aliases(cfg)
+    for role, aliases in role_aliases.items():
         if any(_find_token_index(line, alias) >= 0 for alias in aliases):
             return role
     return None
@@ -218,6 +293,7 @@ def _contains_any(text: str, tokens: list[str]) -> bool:
 
 def _extract_handoff_target_role(
     line: str,
+    cfg: AppConfig,
     *,
     dispatch_tokens: list[str],
     speaker_role: str,
@@ -232,10 +308,12 @@ def _extract_handoff_target_role(
 
     tail = line[dispatch_hit[0] + len(dispatch_hit[1]) :]
     target_hit: tuple[int, str] | None = None
-    for role in AGENT_ROLES:
+    agent_roles = _get_agent_roles(cfg)
+    role_aliases = _get_role_aliases(cfg)
+    for role in agent_roles:
         if role == speaker_role:
             continue
-        for alias in ROLE_ALIASES.get(role, ()):
+        for alias in role_aliases.get(role, ()):
             idx = _find_token_index(tail, alias)
             if idx >= 0 and (target_hit is None or idx < target_hit[0]):
                 target_hit = (idx, role)
@@ -435,7 +513,7 @@ def _find_stagnation_match(
     for start_idx in range(0, len(events) - min_events + 1):
         window = events[start_idx:]
         involved_roles = tuple(dict.fromkeys(event.speaker_role for event in window))
-        if len(set(involved_roles)) < min_roles:
+        if len(involved_roles) < min_roles:
             continue
         cluster_counts = Counter(event.cluster_key for event in window)
         if not cluster_counts:
@@ -528,6 +606,7 @@ def _scan_anomaly_guard_events(
         if cfg.anomaly_guard.auto_dispatch_check and _contains_any(token_text, dispatch_tokens):
             target_role = _extract_handoff_target_role(
                 token_text,
+                cfg,
                 dispatch_tokens=dispatch_tokens,
                 speaker_role=event.speaker_role,
             )
@@ -751,7 +830,7 @@ def _analyze_anomaly_guard(cfg: AppConfig, *, logs: CmdResult) -> dict:
     merged = log_result.stdout + (("\n" + log_result.stderr) if log_result.stderr else "")
     lines_all = [ln for ln in merged.splitlines() if ln.strip()]
     lines = lines_all[-cfg.anomaly_guard.window_lines :]
-    events = _assign_clusters(cfg, _extract_events(lines))
+    events = _assign_clusters(cfg, _extract_events(lines, cfg))
 
     stop_tokens = [x.lower() for x in cfg.anomaly_guard.keywords_stop if x]
     repeat_tokens = [x.lower() for x in cfg.anomaly_guard.keywords_repeat if x]

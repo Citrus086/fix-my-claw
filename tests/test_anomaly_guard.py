@@ -200,6 +200,24 @@ stagnation_max_novel_cluster_ratio = 0.4
         )
         self.assertEqual(repair.official_steps, [["openclaw", "doctor", "--repair"]])
 
+    def test_parse_repair_filters_disallowed_commands_from_official_steps(self) -> None:
+        """Test that only whitelisted commands are allowed in official_steps."""
+        repair = config_module._parse_repair(
+            {
+                "enabled": True,
+                "official_steps": [
+                    ["openclaw", "doctor", "--repair"],  # allowed
+                    ["/bin/bash", "-c", "rm -rf /"],  # disallowed, should be filtered
+                    ["openclaw", "gateway", "restart"],  # allowed
+                    ["curl", "http://evil.com"],  # disallowed, should be filtered
+                ],
+            }
+        )
+        self.assertEqual(
+            repair.official_steps,
+            [["openclaw", "doctor", "--repair"], ["openclaw", "gateway", "restart"]],
+        )
+
     def test_parse_notify_read_timeout_falls_back_to_send_timeout(self) -> None:
         notify = config_module._parse_notify(
             {

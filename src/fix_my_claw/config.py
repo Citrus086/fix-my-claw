@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
 from .shared import _as_path, ensure_dir
+
+_logger = logging.getLogger(__name__)
 
 try:
     import tomllib  # pyright: ignore[reportMissingImports]
@@ -23,6 +27,20 @@ Reason: fix-my-claw detected an unhealthy state and is preserving the current ta
 Expectation: ACK once, then stay paused until further instruction.
 """
 
+# Default agent role aliases - maps canonical role names to their possible aliases
+DEFAULT_AGENT_ROLES = {
+    "orchestrator": ["orchestrator", "macs-orchestrator"],
+    "builder": ["builder", "macs-builder"],
+    "architect": ["architect", "macs-architect"],
+    "research": ["research", "macs-research"],
+}
+
+# Allowed commands for official_steps to prevent command injection
+# Supports both bare commands and absolute paths (checks basename)
+ALLOWED_OFFICIAL_STEP_COMMANDS = frozenset({
+    "openclaw",  # OpenClaw CLI commands
+})
+
 DEFAULT_CONFIG_TOML = """\
 [monitor]
 interval_seconds = 60
@@ -31,6 +49,10 @@ repair_cooldown_seconds = 300
 state_dir = "~/.fix-my-claw"
 log_file = "~/.fix-my-claw/fix-my-claw.log"
 log_level = "INFO"
+# Log rotation settings
+log_max_bytes = 5242880  # 5 MB - rotate when log file exceeds this size
+log_backup_count = 5  # Number of backup log files to keep
+log_retention_days = 30  # Delete log files older than this many days on cleanup
 
 [openclaw]
 command = "openclaw"
@@ -44,7 +66,9 @@ logs_args = ["logs", "--limit", "200", "--plain"]
 enabled = true
 session_control_enabled = true
 session_active_minutes = 30
-session_agents = ["macs-orchestrator", "macs-builder", "macs-architect", "macs-research"]
+# List of agent IDs that fix-my-claw can send session commands to.
+# These should match the agent IDs configured in your OpenClaw setup.
+session_agents = ["YOUR_ORCHESTRATOR_AGENT_ID", "YOUR_BUILDER_AGENT_ID", "YOUR_ARCHITECT_AGENT_ID", "YOUR_RESEARCH_AGENT_ID"]
 soft_pause_enabled = true
 pause_message = '''
 [CONTROL]
@@ -67,7 +91,9 @@ post_step_wait_seconds = 2
 [notify]
 channel = "discord"
 account = "fix-my-claw"
-target = "channel:1479011917367476347"
+# Target for notifications. For Discord, use "channel:YOUR_CHANNEL_ID" or "user:YOUR_USER_ID".
+# You must configure this to receive alerts.
+target = "channel:YOUR_DISCORD_CHANNEL_ID"
 silent = true
 send_timeout_seconds = 20
 read_timeout_seconds = 20
@@ -129,6 +155,16 @@ args_code = [
   "--skip-git-repo-check",
   "-C", "$workspace_dir",
 ]
+
+# Agent roles configuration for anomaly detection.
+# Maps canonical role names to their possible aliases (e.g., short name and full agent ID).
+# The anomaly detector uses these to identify which agent is speaking in the logs.
+[agent_roles]
+# Each key is a canonical role name, and the value is a list of possible aliases.
+orchestrator = ["orchestrator", "YOUR_ORCHESTRATOR_AGENT_ID"]
+builder = ["builder", "YOUR_BUILDER_AGENT_ID"]
+architect = ["architect", "YOUR_ARCHITECT_AGENT_ID"]
+research = ["research", "YOUR_RESEARCH_AGENT_ID"]
 """
 
 
@@ -140,6 +176,9 @@ class MonitorConfig:
     state_dir: Path = field(default_factory=lambda: _as_path("~/.fix-my-claw"))
     log_file: Path = field(default_factory=lambda: _as_path("~/.fix-my-claw/fix-my-claw.log"))
     log_level: str = "INFO"
+    log_max_bytes: int = 5 * 1024 * 1024  # 5 MB - rotate when log exceeds this size
+    log_backup_count: int = 5  # Number of backup files to keep after rotation
+    log_retention_days: int = 30  # Delete logs older than this many days on cleanup
 
 
 @dataclass(frozen=True)
@@ -158,12 +197,10 @@ class RepairConfig:
     session_control_enabled: bool = True
     session_active_minutes: int = 30
     session_agents: list[str] = field(
-        default_factory=lambda: [
-            "macs-orchestrator",
-            "macs-builder",
-            "macs-architect",
-            "macs-research",
-        ]
+        default_factory=lambda: list(DEFAULT_AGENT_ROLES.get("orchestrator", []))
+        + list(DEFAULT_AGENT_ROLES.get("builder", []))
+        + list(DEFAULT_AGENT_ROLES.get("architect", []))
+        + list(DEFAULT_AGENT_ROLES.get("research", []))
     )
     soft_pause_enabled: bool = True
     pause_message: str = DEFAULT_PAUSE_MESSAGE
@@ -261,7 +298,7 @@ class AnomalyGuardConfig:
 class NotifyConfig:
     channel: str = "discord"
     account: str = "fix-my-claw"
-    target: str = "channel:1479011917367476347"
+    target: str = "channel:YOUR_DISCORD_CHANNEL_ID"  # Must be configured by user
     silent: bool = True
     send_timeout_seconds: int = 20
     read_timeout_seconds: int = 20
@@ -271,6 +308,30 @@ class NotifyConfig:
     read_limit: int = 20
     level: str = "all"  # "all" | "important" | "critical"
     operator_user_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AgentRolesConfig:
+    """Configuration for agent role aliases used in anomaly detection.
+
+    Maps canonical role names to their possible aliases.
+    For example: {"orchestrator": ["orchestrator", "macs-orchestrator"]}
+    """
+    roles: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: {k: tuple(v) for k, v in DEFAULT_AGENT_ROLES.items()}
+    )
+
+    def get_aliases(self, role: str) -> tuple[str, ...]:
+        """Get all aliases for a given canonical role name."""
+        return self.roles.get(role, ())
+
+    def get_all_aliases(self) -> frozenset[str]:
+        """Get all aliases across all roles."""
+        return frozenset(alias for aliases in self.roles.values() for alias in aliases)
+
+    def get_canonical_roles(self) -> frozenset[str]:
+        """Get all canonical role names."""
+        return frozenset(self.roles.keys())
 
 
 @dataclass(frozen=True)
@@ -321,6 +382,7 @@ class AppConfig:
     anomaly_guard: AnomalyGuardConfig = field(default_factory=AnomalyGuardConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     ai: AiConfig = field(default_factory=AiConfig)
+    agent_roles: AgentRolesConfig = field(default_factory=AgentRolesConfig)
 
 
 def _get(d: dict[str, Any], key: str, default: Any) -> Any:
@@ -336,6 +398,9 @@ def _parse_monitor(raw: dict[str, Any]) -> MonitorConfig:
         state_dir=_as_path(str(_get(raw, "state_dir", "~/.fix-my-claw"))),
         log_file=_as_path(str(_get(raw, "log_file", "~/.fix-my-claw/fix-my-claw.log"))),
         log_level=str(_get(raw, "log_level", "INFO")),
+        log_max_bytes=max(1024 * 1024, int(_get(raw, "log_max_bytes", 5 * 1024 * 1024))),  # Min 1 MB
+        log_backup_count=max(0, int(_get(raw, "log_backup_count", 5))),
+        log_retention_days=max(1, int(_get(raw, "log_retention_days", 30))),  # Min 1 day
     )
 
 
@@ -352,7 +417,28 @@ def _parse_openclaw(raw: dict[str, Any]) -> OpenClawConfig:
 
 def _parse_repair(raw: dict[str, Any]) -> RepairConfig:
     raw_official_steps = _get(raw, "official_steps", RepairConfig().official_steps)
-    official_steps = [list(x) for x in raw_official_steps if x]
+    # Filter and validate official_steps commands
+    official_steps: list[list[str]] = []
+    for step in raw_official_steps:
+        if not step:
+            continue
+        step_list = list(step)
+        if not step_list:
+            continue
+        # Validate command is in whitelist (check basename to support absolute paths)
+        cmd = str(step_list[0]).strip()
+        cmd_basename = os.path.basename(cmd)
+        if cmd_basename in ALLOWED_OFFICIAL_STEP_COMMANDS:
+            official_steps.append(step_list)
+        else:
+            # Warn about disallowed commands instead of silently ignoring
+            _logger.warning(
+                "Skipping official_step with disallowed command: %r "
+                "(basename %r not in allowed commands: %s)",
+                cmd,
+                cmd_basename,
+                sorted(ALLOWED_OFFICIAL_STEP_COMMANDS),
+            )
     return RepairConfig(
         enabled=bool(_get(raw, "enabled", True)),
         session_control_enabled=bool(_get(raw, "session_control_enabled", True)),
@@ -456,6 +542,37 @@ def _parse_ai(raw: dict[str, Any]) -> AiConfig:
     )
 
 
+def _parse_agent_roles(raw: dict[str, Any]) -> AgentRolesConfig:
+    """Parse agent roles configuration from TOML/JSON data.
+
+    Expected format:
+    [agent_roles]
+    orchestrator = ["orchestrator", "macs-orchestrator"]
+    builder = ["builder", "macs-builder"]
+    ...
+
+    User-specified roles are merged with defaults, so missing roles
+    fall back to default values rather than being removed.
+    """
+    # Start with default roles
+    default_config = AgentRolesConfig()
+    merged_roles: dict[str, tuple[str, ...]] = dict(default_config.roles)
+
+    if not raw:
+        return default_config
+
+    # Merge user-specified roles (override defaults)
+    for role_name, aliases in raw.items():
+        if not isinstance(aliases, list):
+            continue
+        # Filter to non-empty strings
+        valid_aliases = tuple(str(a).strip() for a in aliases if a and str(a).strip())
+        if valid_aliases:
+            merged_roles[str(role_name).strip()] = valid_aliases
+
+    return AgentRolesConfig(roles=merged_roles)
+
+
 def load_config(path: str) -> AppConfig:
     p = _as_path(path)
     if not p.exists():
@@ -468,6 +585,7 @@ def load_config(path: str) -> AppConfig:
     anomaly_guard = _parse_anomaly_guard(dict(anomaly_raw))
     notify = _parse_notify(dict(data.get("notify", {})))
     ai = _parse_ai(dict(data.get("ai", {})))
+    agent_roles = _parse_agent_roles(dict(data.get("agent_roles", {})))
     return AppConfig(
         monitor=monitor,
         openclaw=openclaw,
@@ -475,6 +593,7 @@ def load_config(path: str) -> AppConfig:
         anomaly_guard=anomaly_guard,
         notify=notify,
         ai=ai,
+        agent_roles=agent_roles,
     )
 
 
@@ -495,6 +614,12 @@ def _config_to_dict(cfg: AppConfig) -> dict[str, Any]:
             return None  # Mark None for filtering
         if isinstance(value, Path):
             return str(value)
+        # Check AgentRolesConfig BEFORE is_dataclass because it's also a dataclass
+        if isinstance(value, AgentRolesConfig):
+            # Special case: flatten AgentRolesConfig.roles to match TOML/JSON format
+            # Expected: {"orchestrator": [...], "builder": [...]}
+            # NOT: {"roles": {"orchestrator": [...], ...}}
+            return {str(key): list(_convert(item) for item in aliases) for key, aliases in value.roles.items()}
         if is_dataclass(value):
             return {field_.name: _convert(getattr(value, field_.name)) for field_ in fields(value)}
         if isinstance(value, list):
@@ -550,6 +675,7 @@ def _dict_to_config(data: dict[str, Any]) -> AppConfig:
         anomaly_guard=_parse_anomaly_guard(dict(anomaly_raw)),
         notify=_parse_notify(_section_dict(data, "notify")),
         ai=_parse_ai(_section_dict(data, "ai")),
+        agent_roles=_parse_agent_roles(_section_dict(data, "agent_roles")),
     )
 
 
