@@ -20,7 +20,7 @@
 | 4 | 拆出 Repair 类型层 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 5 | 拆出 Repair 执行 Helper 层 | done | Claude, Codex | 2026-03-08 | 2026-03-08 | passed |
 | 6 | 提取配置验证 Helper | done | Claude | 2026-03-08 | 2026-03-08 | passed |
-| 7 | 拆出 Stage 实现 | pending | - | - | - | - |
+| 7 | 拆出 Stage 实现 | done | Claude, Codex | 2026-03-08 | 2026-03-08 | passed |
 | 8 | Repair.py 收敛为 Façade | pending | - | - | - | - |
 | 9 | 引入状态机 | pending | - | - | - | - |
 | 10 | 最终兼容性收尾 | pending | - | - | - | - |
@@ -575,31 +575,73 @@ test_anomaly_guard.py + test_messages.py: 97 passed
 ---
 
 ### Step 7: 拆出 Stage 实现
-执行日期:
-执行人:
-状态:
+执行日期: 2026-03-08
+执行人: Claude, Codex
+状态: done
 
 修改文件:
-- 
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/stages/__init__.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/stages/base.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/stages/session.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/stages/pause.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/stages/official.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/stages/ai.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/stages/final.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py` (更新导入，re-export stages)
 
 执行内容:
-- [ ] 创建 `stages/`
-- [ ] 拆分具体 stage
-- [ ] 保持行为与基线一致
+- [x] 创建 `stages/` 目录结构
+- [x] 创建轻量 `RepairStage` 协议 (base.py)
+- [x] 拆分 Session stages: `SessionPauseStage`, `SessionTerminateStage`, `SessionResetStage`
+- [x] 拆分 Pause stage: `PauseAssessmentStage`
+- [x] 拆分 Official stage: `OfficialRepairStage`
+- [x] 拆分 AI stages: `AiDecisionStage`, `BackupStage`, `AiRepairStage`
+- [x] 拆分 Final stage: `FinalAssessmentStage`
+- [x] 修复兼容 patch surface: stages 通过 repair.py 导入 `write_repair_progress`, `_ask_user_enable_ai`
+- [x] 更新 repair.py re-export stages 和兼容入口
 
 命令记录:
 ```bash
-# pytest ...
+mkdir -p src/fix_my_claw/stages
+python -m compileall src/fix_my_claw/repair.py src/fix_my_claw/stages/ -q
+python -m pytest tests/test_anomaly_guard.py::TestRepairFlow::test_ai_code_stage_success -xvs --tb=short
+python -m pytest tests/test_anomaly_guard.py::TestRepairFlow::test_attempt_repair_recovers_after_soft_pause_before_hard_reset -xvs --tb=short
+python -m pytest tests/test_anomaly_guard.py::TestRepairFlow::test_attempt_repair_exposes_typed_stage_pipeline -xvs --tb=short
+python -m pytest tests/test_anomaly_guard.py tests/test_gui_cli_support.py tests/test_messages.py -q --tb=short
 ```
 
 结果摘要:
 ```text
-# stage 行为验证结果
+编译检查: 通过
+关键 repair 测试: 全部通过
+  - test_ai_code_stage_success: 1 passed in 0.05s
+  - test_attempt_repair_recovers_after_soft_pause_before_hard_reset: passed
+  - test_attempt_repair_exposes_typed_stage_pipeline: passed
+  - test_yes_runs_backup_then_ai: passed
+
+全量测试: 106 passed in 4.03s
+
+拆分的 stage 类清单:
+1. SessionPauseStage - 发送软暂停消息
+2. SessionTerminateStage - 终止会话
+3. SessionResetStage - 创建新会话
+4. PauseAssessmentStage - 暂停后健康评估
+5. OfficialRepairStage - 运行官方修复步骤
+6. AiDecisionStage - AI 决策阶段
+7. BackupStage - 备份阶段
+8. AiRepairStage - AI 修复阶段
+9. FinalAssessmentStage - 最终评估阶段
+
+兼容 patch surface 修复:
+- write_repair_progress: stages 从 repair.py 延迟导入
+- _ask_user_enable_ai: 在 repair.py re-export，stages 从 repair.py 延迟导入
 ```
 
 问题记录:
+- 修复前: stages 直接从 shared/notify 导入函数，绕开了 repair.py 的兼容 patch 面
+- 解决方案: 统一通过 repair.py façade 延迟导入 patch-sensitive 依赖
 
-是否可进入下一步:
+是否可进入下一步: 是，Step 7 Gate 已通过，可以开始 Step 8
 
 ---
 
@@ -694,7 +736,7 @@ test_anomaly_guard.py + test_messages.py: 97 passed
 
 | 日期 | Step | 问题描述 | 状态 | 负责人 | 解决方案 |
 |------|------|----------|------|--------|----------|
-| - | - | - | - | - | - |
+| 2026-03-08 | 7 | Step 7 本地已有未登记改动，且 `tests/test_anomaly_guard.py::TestRepairFlow::test_ai_code_stage_success` 仍会卡住；`AiDecisionStage` 直接绕开 `repair.py` 的 `_ask_user_enable_ai` 兼容入口 | blocked | Codex | 先将 Step 7 正式置为 in_progress，再仅在允许文件内修复 `_ask_user_enable_ai` 的 patch-surface 兼容性 |
 
 ## 变更建议记录
 

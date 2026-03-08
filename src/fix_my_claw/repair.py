@@ -50,11 +50,26 @@ from .shared import (
     ensure_dir,
     redact_text,
     truncate_for_log,
-    write_repair_progress,
+    write_repair_progress as _write_repair_progress_impl,
+)
+
+# Re-export write_repair_progress for stages to use (test compatibility)
+write_repair_progress = _write_repair_progress_impl
+from .stages import (
+    AiDecisionStage,
+    AiRepairStage,
+    BackupStage,
+    FinalAssessmentStage,
+    OfficialRepairStage,
+    PauseAssessmentStage,
+    SessionPauseStage,
+    SessionResetStage,
+    SessionTerminateStage,
 )
 from .state import StateStore, _now_ts
 
 __all__ = [
+    # Types
     "AiDecision",
     "AiRepairStageData",
     "BackupArtifact",
@@ -67,15 +82,20 @@ __all__ = [
     "SessionStageData",
     "StagePayload",
     "StageResult",
+    # Type helpers
     "_cmd_result_to_json",
     "_coerce_execution_records",
     "_records_to_json",
     "_require_stage_payload",
+    # Notification levels
     "NOTIFY_LEVEL_ALL",
     "NOTIFY_LEVEL_IMPORTANT",
     "NOTIFY_LEVEL_CRITICAL",
+    # Notification helpers
     "_should_notify",
     "_notify_send_with_level",
+    "_ask_user_enable_ai",
+    # Operational helpers (re-exported from repair_ops)
     "_parse_agent_id_from_session_key",
     "_list_active_sessions",
     "_backup_openclaw_state",
@@ -93,6 +113,7 @@ __all__ = [
     "_should_try_soft_pause",
     "_ai_decision_source_label",
     "_ai_decision_notification_text",
+    # Dependencies (for patch compatibility)
     "probe_health",
     "probe_logs",
     "probe_status",
@@ -101,6 +122,16 @@ __all__ = [
     "HealthEvaluation",
     "CmdResult",
     "_analyze_anomaly_guard",
+    # Stages
+    "SessionPauseStage",
+    "SessionTerminateStage",
+    "SessionResetStage",
+    "PauseAssessmentStage",
+    "OfficialRepairStage",
+    "AiDecisionStage",
+    "BackupStage",
+    "AiRepairStage",
+    "FinalAssessmentStage",
 ]
 
 NOTIFY_LEVEL_ALL = repair_ops.NOTIFY_LEVEL_ALL
@@ -255,254 +286,6 @@ def _run_ai_repair(cfg: AppConfig, attempt_dir: Path, *, code_stage: bool) -> Cm
     )
 
 
-
-@dataclass(frozen=True)
-class SessionPauseStage:
-    def run(self, ctx: RepairPipelineContext) -> StageResult:
-        write_repair_progress(
-            ctx.cfg.monitor.state_dir,
-            stage="pause",
-            status="running",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
-        )
-        commands = _coerce_execution_records(
-            _run_session_command_stage(
-                ctx.cfg,
-                ctx.attempt_dir,
-                stage_name="pause",
-                message_text=ctx.cfg.repair.pause_message,
-            )
-        )
-        write_repair_progress(
-            ctx.cfg.monitor.state_dir,
-            stage="pause",
-            status="completed",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
-        )
-        return StageResult(
-            name="pause",
-            status="completed",
-            payload=SessionStageData(stage_name="pause", commands=commands),
-        )
-
-
-@dataclass(frozen=True)
-class PauseAssessmentStage:
-    def run(self, ctx: RepairPipelineContext, *, previous_stage: StageResult) -> StageResult:
-        waited_before_seconds = 0
-        payload = _require_stage_payload(previous_stage, SessionStageData)
-        if payload.commands and ctx.cfg.repair.pause_wait_seconds > 0:
-            time.sleep(ctx.cfg.repair.pause_wait_seconds)
-            waited_before_seconds = ctx.cfg.repair.pause_wait_seconds
-        evaluation, context = _evaluate_with_context(
-            ctx.cfg,
-            ctx.attempt_dir,
-            stage_name="after_pause",
-        )
-        return StageResult(
-            name="pause_check",
-            status="completed",
-            payload=PauseCheckStageData(waited_before_seconds=waited_before_seconds),
-            evaluation=evaluation,
-            context=context,
-            stop_reason="healthy_after_pause" if evaluation.effective_healthy else "still_unhealthy_after_pause",
-        )
-
-
-@dataclass(frozen=True)
-class SessionTerminateStage:
-    def run(self, ctx: RepairPipelineContext) -> StageResult:
-        commands = _coerce_execution_records(
-            _run_session_command_stage(
-                ctx.cfg,
-                ctx.attempt_dir,
-                stage_name="terminate",
-                message_text=ctx.cfg.repair.terminate_message,
-            )
-        )
-        return StageResult(
-            name="terminate",
-            status="completed",
-            payload=SessionStageData(stage_name="terminate", commands=commands),
-        )
-
-
-@dataclass(frozen=True)
-class SessionResetStage:
-    def run(self, ctx: RepairPipelineContext, *, previous_stage: StageResult | None) -> StageResult:
-        waited_before_seconds = 0
-        if previous_stage is not None:
-            payload = _require_stage_payload(previous_stage, SessionStageData)
-            if payload.commands and ctx.cfg.repair.session_stage_wait_seconds > 0:
-                time.sleep(ctx.cfg.repair.session_stage_wait_seconds)
-                waited_before_seconds = ctx.cfg.repair.session_stage_wait_seconds
-        commands = _coerce_execution_records(
-            _run_session_command_stage(
-                ctx.cfg,
-                ctx.attempt_dir,
-                stage_name="new",
-                message_text=ctx.cfg.repair.new_message,
-            )
-        )
-        return StageResult(
-            name="new",
-            status="completed",
-            payload=SessionStageData(
-                stage_name="new",
-                commands=commands,
-                waited_before_seconds=waited_before_seconds,
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class OfficialRepairStage:
-    def run(self, ctx: RepairPipelineContext) -> StageResult:
-        write_repair_progress(
-            ctx.cfg.monitor.state_dir,
-            stage="official",
-            status="running",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
-        )
-        steps, evaluation, break_reason = _run_official_steps(
-            ctx.cfg,
-            ctx.attempt_dir,
-            break_on_healthy=True,
-        )
-        write_repair_progress(
-            ctx.cfg.monitor.state_dir,
-            stage="official",
-            status="completed",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
-        )
-        return StageResult(
-            name="official",
-            status="completed",
-            payload=OfficialRepairStageData(
-                steps=_coerce_execution_records(steps),
-                break_reason=break_reason,
-            ),
-            evaluation=evaluation,
-            context=_collect_context(evaluation, ctx.attempt_dir, stage_name="after_official"),
-            stop_reason=break_reason,
-        )
-
-
-@dataclass(frozen=True)
-class AiDecisionStage:
-    preset: dict[str, Any] | None = None
-
-    def run(self, ctx: RepairPipelineContext) -> StageResult:
-        write_repair_progress(
-            ctx.cfg.monitor.state_dir,
-            stage="ai_decision",
-            status="running",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
-        )
-        decision = self.preset or _ask_user_enable_ai(ctx.cfg, ctx.attempt_dir)
-        payload = AiDecision.from_mapping(decision)
-        notification_text = _ai_decision_notification_text(payload)
-        write_repair_progress(
-            ctx.cfg.monitor.state_dir,
-            stage="ai_decision",
-            status="completed",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
-        )
-        return StageResult(
-            name="ai_decision",
-            status="completed",
-            payload=payload,
-            notification=(
-                _notify_send_with_level(ctx.cfg, notification_text, NOTIFY_LEVEL_ALL, silent=False)
-                if notification_text is not None
-                else None
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class BackupStage:
-    def run(self, ctx: RepairPipelineContext) -> StageResult:
-        write_repair_progress(
-            ctx.cfg.monitor.state_dir,
-            stage="backup",
-            status="running",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
-        )
-        try:
-            artifact = BackupArtifact.from_mapping(_backup_openclaw_state(ctx.cfg, ctx.attempt_dir))
-        except Exception as exc:
-            write_repair_progress(
-                ctx.cfg.monitor.state_dir,
-                stage="backup",
-                status="failed",
-                attempt_dir=str(ctx.attempt_dir.resolve()),
-            )
-            return StageResult(
-                name="backup",
-                status="failed",
-                payload=BackupArtifact(error=str(exc)),
-                stop_reason="backup_error",
-            )
-        write_repair_progress(
-            ctx.cfg.monitor.state_dir,
-            stage="backup",
-            status="completed",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
-        )
-        return StageResult(
-            name="backup",
-            status="completed",
-            payload=artifact,
-            notification=_notify_send_with_level(
-                ctx.cfg,
-                backup_completed(artifact.archive),
-                NOTIFY_LEVEL_IMPORTANT,
-                silent=False,
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class AiRepairStage:
-    code_stage: bool
-
-    def run(self, ctx: RepairPipelineContext) -> StageResult:
-        result = _run_ai_repair(ctx.cfg, ctx.attempt_dir, code_stage=self.code_stage)
-        stage_suffix = "code" if self.code_stage else "config"
-        evaluation, context = _evaluate_with_context(
-            ctx.cfg,
-            ctx.attempt_dir,
-            stage_name=f"after_ai_{stage_suffix}",
-        )
-        return StageResult(
-            name=f"ai_{stage_suffix}",
-            status="completed",
-            payload=AiRepairStageData(stage_name=stage_suffix, result=result),
-            evaluation=evaluation,
-            context=context,
-            used_ai=True,
-        )
-
-
-@dataclass(frozen=True)
-class FinalAssessmentStage:
-    stage_name: str
-
-    def run(self, ctx: RepairPipelineContext) -> StageResult:
-        evaluation, context = _evaluate_with_context(
-            ctx.cfg,
-            ctx.attempt_dir,
-            stage_name=self.stage_name,
-        )
-        return StageResult(
-            name="final",
-            status="completed",
-            evaluation=evaluation,
-            context=context,
-        )
-
-
 def _result_from_outcome(*, attempted: bool, outcome: RepairOutcome) -> RepairResult:
     return RepairResult(
         attempted=attempted,
@@ -554,7 +337,7 @@ def attempt_repair(
     ctx = RepairPipelineContext(cfg=cfg, store=store, attempt_dir=attempt_dir)
     outcome = RepairOutcome(attempt_dir=str(attempt_dir.resolve()), reason=reason)
     repair_log.info("starting repair attempt: dir=%s", attempt_dir.resolve())
-    
+
     # 写入初始进度
     write_repair_progress(
         cfg.monitor.state_dir,

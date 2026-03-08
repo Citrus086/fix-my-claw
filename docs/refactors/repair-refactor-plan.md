@@ -252,7 +252,7 @@
 - 删除 `config_validation.py`，恢复原始 parse 实现
 
 ### Step 7: 拆出 Stage 实现
-状态: pending
+状态: done
 前置依赖: Step 6
 目标: 将 stage 类按职责拆到 `stages/`，但不做过度抽象。
 
