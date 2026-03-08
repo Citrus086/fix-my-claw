@@ -949,6 +949,121 @@ class TestNotifyDecision(unittest.TestCase):
         )
         self.assertIsNone(notify_module._extract_manual_repair_command(cfg, outsider_command))
 
+    def test_extract_manual_repair_command_uses_configured_keywords(self) -> None:
+        """Test that custom manual repair keywords from config are recognized."""
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
+                account=TEST_BOT_USERNAME,
+                target=f"channel:{TEST_CHANNEL_ID}",
+                operator_user_ids=["u1"],
+                manual_repair_keywords=["fixit", "repair", "修复"],
+            )
+        )
+        # Custom keyword "fixit" should work
+        fixit_command = {
+            "id": "m1",
+            "content": f"<@{TEST_BOT_USER_ID}> fixit",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+        # Default keyword "手动修复" should NOT work when not in config
+        default_command = {
+            "id": "m2",
+            "content": f"<@{TEST_BOT_USER_ID}> 手动修复",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+        # Configured keyword "repair" should work
+        repair_command = {
+            "id": "m3",
+            "content": f"<@{TEST_BOT_USER_ID}> repair",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+
+        self.assertEqual(
+            notify_module._extract_manual_repair_command(cfg, fixit_command),
+            {
+                "command": "manual_repair",
+                "source": "discord",
+                "message_id": "m1",
+                "author_id": "u1",
+                "content": "fixit",
+            },
+        )
+        self.assertIsNone(notify_module._extract_manual_repair_command(cfg, default_command))
+        self.assertEqual(
+            notify_module._extract_manual_repair_command(cfg, repair_command),
+            {
+                "command": "manual_repair",
+                "source": "discord",
+                "message_id": "m3",
+                "author_id": "u1",
+                "content": "repair",
+            },
+        )
+
+    def test_extract_ai_decision_uses_configured_keywords(self) -> None:
+        """Test that custom AI approval/rejection keywords from config are recognized."""
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
+                account=TEST_BOT_USERNAME,
+                target=f"channel:{TEST_CHANNEL_ID}",
+                operator_user_ids=["u1"],
+                ai_approve_keywords=["ok", "confirm"],
+                ai_reject_keywords=["skip", "cancel"],
+            )
+        )
+        # Custom approve keywords (with mention)
+        ok_msg = {
+            "id": "m1",
+            "content": f"<@{TEST_BOT_USER_ID}> ok",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+        confirm_msg = {
+            "id": "m2",
+            "content": f"<@{TEST_BOT_USER_ID}> confirm",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+        # Default approve keyword should NOT work
+        yes_msg = {
+            "id": "m3",
+            "content": f"<@{TEST_BOT_USER_ID}> yes",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+
+        # Custom reject keywords (with mention)
+        skip_msg = {
+            "id": "m4",
+            "content": f"<@{TEST_BOT_USER_ID}> skip",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+        cancel_msg = {
+            "id": "m5",
+            "content": f"<@{TEST_BOT_USER_ID}> cancel",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+        # Default reject keyword should NOT work
+        no_msg = {
+            "id": "m6",
+            "content": f"<@{TEST_BOT_USER_ID}> no",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+
+        self.assertEqual(notify_module._extract_ai_decision(cfg, ok_msg), "yes")
+        self.assertEqual(notify_module._extract_ai_decision(cfg, confirm_msg), "yes")
+        self.assertIsNone(notify_module._extract_ai_decision(cfg, yes_msg))
+
+        self.assertEqual(notify_module._extract_ai_decision(cfg, skip_msg), "no")
+        self.assertEqual(notify_module._extract_ai_decision(cfg, cancel_msg), "no")
+        self.assertIsNone(notify_module._extract_ai_decision(cfg, no_msg))
+
     def test_poll_manual_repair_command_advances_cursor_and_deduplicates(self) -> None:
         state_dir = Path(tempfile.mkdtemp())
         cfg = config_module.AppConfig(

@@ -113,6 +113,12 @@ level = "all"
 # If target is channel:..., reply should mention notify account (e.g. "@fix-my-claw yes").
 # Only strict replies are accepted: 是/否/yes/no. Invalid replies are re-asked and capped at 3 attempts.
 operator_user_ids = []
+# Keywords for manual repair command recognition (case-insensitive)
+manual_repair_keywords = ["手动修复", "manual repair", "修复", "repair"]
+# Keywords for AI approval (yes) - case-insensitive
+ai_approve_keywords = ["yes", "是"]
+# Keywords for AI rejection (no) - case-insensitive
+ai_reject_keywords = ["no", "否"]
 
 [anomaly_guard]
 enabled = true
@@ -315,6 +321,18 @@ class NotifyConfig:
     read_limit: int = 20
     level: str = "all"  # "all" | "important" | "critical"
     operator_user_ids: list[str] = field(default_factory=list)
+    # Keywords for manual repair command recognition
+    manual_repair_keywords: list[str] = field(
+        default_factory=lambda: ["手动修复", "manual repair", "修复", "repair"]
+    )
+    # Keywords for AI approval (yes)
+    ai_approve_keywords: list[str] = field(
+        default_factory=lambda: ["yes", "是"]
+    )
+    # Keywords for AI rejection (no)
+    ai_reject_keywords: list[str] = field(
+        default_factory=lambda: ["no", "否"]
+    )
 
 
 @dataclass(frozen=True)
@@ -502,6 +520,20 @@ def _parse_anomaly_guard(raw: dict[str, Any]) -> AnomalyGuardConfig:
     )
 
 
+def _parse_keyword_list(value: Any, default: list[str] | None = None) -> list[str]:
+    """Parse a list of keywords, filtering out empty strings and normalizing to lowercase.
+    
+    Returns default if value is empty or contains only empty strings.
+    """
+    keywords = parse_string_list(value)
+    # Filter out empty strings and normalize
+    result = [k.strip().lower() for k in keywords if isinstance(k, str) and k.strip()]
+    # Return default if result is empty (prevents accidental lockout from bad config)
+    if not result and default is not None:
+        return list(default)
+    return result
+
+
 def _parse_notify(raw: dict[str, Any]) -> NotifyConfig:
     cfg = NotifyConfig()
     # Clamp timeouts to reasonable bounds: min 5s, max 5 minutes
@@ -526,6 +558,10 @@ def _parse_notify(raw: dict[str, Any]) -> NotifyConfig:
         read_limit=clamp_int(get_value(raw, "read_limit", cfg.read_limit), 1),
         level=level_value,
         operator_user_ids=parse_string_list(get_value(raw, "operator_user_ids", cfg.operator_user_ids)),
+        # Parse keyword lists (non-empty strings only)
+        manual_repair_keywords=_parse_keyword_list(get_value(raw, "manual_repair_keywords", cfg.manual_repair_keywords)),
+        ai_approve_keywords=_parse_keyword_list(get_value(raw, "ai_approve_keywords", cfg.ai_approve_keywords)),
+        ai_reject_keywords=_parse_keyword_list(get_value(raw, "ai_reject_keywords", cfg.ai_reject_keywords)),
     )
 
 

@@ -22,10 +22,24 @@ from .shared import (
 )
 
 _MANUAL_REPAIR_CURSOR_NAME = "notify.manual_repair.cursor.json"
-_MANUAL_REPAIR_COMMAND_TOKENS = frozenset({"手动修复", "manual repair", "修复", "repair"})
 _KNOWN_NOTIFY_ACCOUNT_IDS = {
     "fixmyclaw": "1479170394580848660",
 }
+
+
+def _get_manual_repair_tokens(cfg: AppConfig) -> frozenset[str]:
+    """Get manual repair command tokens from config."""
+    return frozenset(cfg.notify.manual_repair_keywords)
+
+
+def _get_ai_approve_tokens(cfg: AppConfig) -> frozenset[str]:
+    """Get AI approval (yes) tokens from config."""
+    return frozenset(cfg.notify.ai_approve_keywords)
+
+
+def _get_ai_reject_tokens(cfg: AppConfig) -> frozenset[str]:
+    """Get AI rejection (no) tokens from config."""
+    return frozenset(cfg.notify.ai_reject_keywords)
 
 
 def _notify_send(cfg: AppConfig, text: str, *, silent: bool | None = None) -> dict[str, Any]:
@@ -197,9 +211,9 @@ def _extract_ai_decision(
     if not _is_ai_reply_candidate(cfg, message, required_mention_id=required_mention_id):
         return None
     content = _normalize_ai_reply_token(str(message.get("content", "")))
-    if content in {"yes", "是"}:
+    if content in _get_ai_approve_tokens(cfg):
         return "yes"
-    if content in {"no", "否"}:
+    if content in _get_ai_reject_tokens(cfg):
         return "no"
     return None
 
@@ -248,7 +262,7 @@ def _extract_manual_repair_command(
     if not _is_ai_reply_candidate(cfg, message, required_mention_id=required_mention_id):
         return None
     content = _normalize_ai_reply_token(str(message.get("content", "")))
-    if content not in _MANUAL_REPAIR_COMMAND_TOKENS:
+    if content not in _get_manual_repair_tokens(cfg):
         return None
     author = message.get("author")
     return {
@@ -284,7 +298,11 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
     if not cfg.notify.ask_enable_ai:
         return {"asked": False, "decision": "skip"}
     max_invalid_replies = 3
-    prompt = ask_enable_ai_prompt(cfg.notify.account)
+    prompt = ask_enable_ai_prompt(
+        cfg.notify.account,
+        yes_keywords=cfg.notify.ai_approve_keywords,
+        no_keywords=cfg.notify.ai_reject_keywords,
+    )
     try:
         sent = _notify_send(cfg, prompt, silent=False)
     except Exception as exc:
@@ -410,7 +428,11 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
                 try:
                     _notify_send(
                         cfg,
-                        ask_invalid_reply(remaining),
+                        ask_invalid_reply(
+                            remaining,
+                            yes_keywords=cfg.notify.ai_approve_keywords,
+                            no_keywords=cfg.notify.ai_reject_keywords,
+                        ),
                         silent=False,
                     )
                 except Exception as notify_exc:

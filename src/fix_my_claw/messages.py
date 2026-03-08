@@ -74,18 +74,22 @@ REPAIR_FINAL_STILL_UNHEALTHY = (
 
 
 # AI approval request messages (used in notify.py)
-def ask_enable_ai_prompt(account: str) -> str:
+def ask_enable_ai_prompt(account: str, yes_keywords: list[str] | None = None, no_keywords: list[str] | None = None) -> str:
     """Prompt message for asking user to enable AI repair."""
+    yes_opts = "/".join(yes_keywords or ["yes", "是"])
+    no_opts = "/".join(no_keywords or ["no", "否"])
     return (
         "fix-my-claw: 已执行分层修复（必要时含 PAUSE 复检、/stop、/new 与官方结构修复），当前仍异常。"
-        f"是否启用 Codex 修复？请 @{account} 回复 是/否（Please answer with yes/no）。"
-        "（回复 yes/是 将先备份整个 ~/.openclaw 到其上级目录）"
+        f"是否启用 Codex 修复？请 @{account} 回复 {yes_opts}/{no_opts}。"
+        f"（回复 {yes_opts} 将先备份整个 ~/.openclaw 到其上级目录）"
     )
 
 
-def ask_invalid_reply(remaining: int) -> str:
+def ask_invalid_reply(remaining: int, yes_keywords: list[str] | None = None, no_keywords: list[str] | None = None) -> str:
     """Notification text when user sends an invalid reply."""
-    return f"fix-my-claw: 未识别到有效回复。请仅回复 是/否（Please answer with yes/no）。剩余 {remaining} 次。"
+    yes_opts = "/".join(yes_keywords or ["yes", "是"])
+    no_opts = "/".join(no_keywords or ["no", "否"])
+    return f"fix-my-claw: 未识别到有效回复。请仅回复 {yes_opts}/{no_opts}。剩余 {remaining} 次。"
 
 
 def manual_repair_acknowledged(command: str) -> str:
