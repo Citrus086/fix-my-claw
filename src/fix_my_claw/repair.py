@@ -68,6 +68,18 @@ from .stages import (
 )
 from .state import StateStore, _now_ts
 
+"""
+Repair module façade.
+
+This module serves as the public entry point for repair functionality.
+All types, helpers, and stages are defined in separate modules:
+- repair_types.py: Result models and type helpers
+- repair_ops.py: Operational helper implementations
+- stages/: Individual stage implementations
+
+The module re-exports everything needed for backward compatibility.
+"""
+
 __all__ = [
     # Types
     "AiDecision",
@@ -113,6 +125,9 @@ __all__ = [
     "_should_try_soft_pause",
     "_ai_decision_source_label",
     "_ai_decision_notification_text",
+    # Progress helpers
+    "write_repair_progress",
+    "clear_repair_progress",
     # Dependencies (for patch compatibility)
     "probe_health",
     "probe_logs",
