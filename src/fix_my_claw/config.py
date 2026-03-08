@@ -6,6 +6,13 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from .config_validation import (
+    clamp_float,
+    clamp_int,
+    get_value,
+    parse_string_list,
+    validate_section_dict,
+)
 from .shared import _as_path, ensure_dir
 
 _logger = logging.getLogger(__name__)
@@ -385,38 +392,36 @@ class AppConfig:
     agent_roles: AgentRolesConfig = field(default_factory=AgentRolesConfig)
 
 
-def _get(d: dict[str, Any], key: str, default: Any) -> Any:
-    v = d.get(key, default)
-    return default if v is None else v
-
-
 def _parse_monitor(raw: dict[str, Any]) -> MonitorConfig:
+    cfg = MonitorConfig()
     return MonitorConfig(
-        interval_seconds=max(1, int(_get(raw, "interval_seconds", 60))),
-        probe_timeout_seconds=max(1, int(_get(raw, "probe_timeout_seconds", 30))),
-        repair_cooldown_seconds=max(0, int(_get(raw, "repair_cooldown_seconds", 300))),
-        state_dir=_as_path(str(_get(raw, "state_dir", "~/.fix-my-claw"))),
-        log_file=_as_path(str(_get(raw, "log_file", "~/.fix-my-claw/fix-my-claw.log"))),
-        log_level=str(_get(raw, "log_level", "INFO")),
-        log_max_bytes=max(1024 * 1024, int(_get(raw, "log_max_bytes", 5 * 1024 * 1024))),  # Min 1 MB
-        log_backup_count=max(0, int(_get(raw, "log_backup_count", 5))),
-        log_retention_days=max(1, int(_get(raw, "log_retention_days", 30))),  # Min 1 day
+        interval_seconds=clamp_int(get_value(raw, "interval_seconds", cfg.interval_seconds), 1),
+        probe_timeout_seconds=clamp_int(get_value(raw, "probe_timeout_seconds", cfg.probe_timeout_seconds), 1),
+        repair_cooldown_seconds=clamp_int(get_value(raw, "repair_cooldown_seconds", cfg.repair_cooldown_seconds), 0),
+        state_dir=_as_path(str(get_value(raw, "state_dir", cfg.state_dir))),
+        log_file=_as_path(str(get_value(raw, "log_file", cfg.log_file))),
+        log_level=str(get_value(raw, "log_level", cfg.log_level)),
+        log_max_bytes=clamp_int(get_value(raw, "log_max_bytes", cfg.log_max_bytes), 1024 * 1024),  # Min 1 MB
+        log_backup_count=clamp_int(get_value(raw, "log_backup_count", cfg.log_backup_count), 0),
+        log_retention_days=clamp_int(get_value(raw, "log_retention_days", cfg.log_retention_days), 1),  # Min 1 day
     )
 
 
 def _parse_openclaw(raw: dict[str, Any]) -> OpenClawConfig:
+    cfg = OpenClawConfig()
     return OpenClawConfig(
-        command=str(_get(raw, "command", "openclaw")),
-        state_dir=_as_path(str(_get(raw, "state_dir", "~/.openclaw"))),
-        workspace_dir=_as_path(str(_get(raw, "workspace_dir", "~/.openclaw/workspace"))),
-        health_args=list(_get(raw, "health_args", ["gateway", "health", "--json"])),
-        status_args=list(_get(raw, "status_args", ["gateway", "status", "--json"])),
-        logs_args=list(_get(raw, "logs_args", ["logs", "--limit", "200", "--plain"])),
+        command=str(get_value(raw, "command", cfg.command)),
+        state_dir=_as_path(str(get_value(raw, "state_dir", cfg.state_dir))),
+        workspace_dir=_as_path(str(get_value(raw, "workspace_dir", cfg.workspace_dir))),
+        health_args=list(get_value(raw, "health_args", cfg.health_args)),
+        status_args=list(get_value(raw, "status_args", cfg.status_args)),
+        logs_args=list(get_value(raw, "logs_args", cfg.logs_args)),
     )
 
 
 def _parse_repair(raw: dict[str, Any]) -> RepairConfig:
-    raw_official_steps = _get(raw, "official_steps", RepairConfig().official_steps)
+    cfg = RepairConfig()
+    raw_official_steps = get_value(raw, "official_steps", cfg.official_steps)
     # Filter and validate official_steps commands
     official_steps: list[list[str]] = []
     for step in raw_official_steps:
@@ -440,105 +445,106 @@ def _parse_repair(raw: dict[str, Any]) -> RepairConfig:
                 sorted(ALLOWED_OFFICIAL_STEP_COMMANDS),
             )
     return RepairConfig(
-        enabled=bool(_get(raw, "enabled", True)),
-        session_control_enabled=bool(_get(raw, "session_control_enabled", True)),
-        session_active_minutes=max(1, int(_get(raw, "session_active_minutes", 30))),
-        session_agents=[str(x).strip() for x in _get(raw, "session_agents", RepairConfig().session_agents)],
-        soft_pause_enabled=bool(_get(raw, "soft_pause_enabled", True)),
-        pause_message=str(_get(raw, "pause_message", DEFAULT_PAUSE_MESSAGE)),
-        pause_wait_seconds=max(0, int(_get(raw, "pause_wait_seconds", 20))),
-        terminate_message=str(_get(raw, "terminate_message", "/stop")),
-        new_message=str(_get(raw, "new_message", "/new")),
-        session_command_timeout_seconds=max(10, int(_get(raw, "session_command_timeout_seconds", 120))),
-        session_stage_wait_seconds=max(0, int(_get(raw, "session_stage_wait_seconds", 1))),
+        enabled=bool(get_value(raw, "enabled", cfg.enabled)),
+        session_control_enabled=bool(get_value(raw, "session_control_enabled", cfg.session_control_enabled)),
+        session_active_minutes=clamp_int(get_value(raw, "session_active_minutes", cfg.session_active_minutes), 1),
+        session_agents=parse_string_list(get_value(raw, "session_agents", cfg.session_agents)),
+        soft_pause_enabled=bool(get_value(raw, "soft_pause_enabled", cfg.soft_pause_enabled)),
+        pause_message=str(get_value(raw, "pause_message", cfg.pause_message)),
+        pause_wait_seconds=clamp_int(get_value(raw, "pause_wait_seconds", cfg.pause_wait_seconds), 0),
+        terminate_message=str(get_value(raw, "terminate_message", cfg.terminate_message)),
+        new_message=str(get_value(raw, "new_message", cfg.new_message)),
+        session_command_timeout_seconds=clamp_int(get_value(raw, "session_command_timeout_seconds", cfg.session_command_timeout_seconds), 10),
+        session_stage_wait_seconds=clamp_int(get_value(raw, "session_stage_wait_seconds", cfg.session_stage_wait_seconds), 0),
         official_steps=official_steps,
-        step_timeout_seconds=max(1, int(_get(raw, "step_timeout_seconds", 600))),
-        post_step_wait_seconds=max(0, int(_get(raw, "post_step_wait_seconds", 2))),
+        step_timeout_seconds=clamp_int(get_value(raw, "step_timeout_seconds", cfg.step_timeout_seconds), 1),
+        post_step_wait_seconds=clamp_int(get_value(raw, "post_step_wait_seconds", cfg.post_step_wait_seconds), 0),
     )
 
 
 def _parse_anomaly_guard(raw: dict[str, Any]) -> AnomalyGuardConfig:
     cfg = AnomalyGuardConfig()
-    min_cycle_repeated_turns = _get(raw, "min_cycle_repeated_turns", _get(raw, "min_ping_pong_turns", cfg.min_cycle_repeated_turns))
+    # Support legacy alias min_ping_pong_turns -> min_cycle_repeated_turns
+    min_cycle_repeated_turns = get_value(
+        raw, "min_cycle_repeated_turns",
+        get_value(raw, "min_ping_pong_turns", cfg.min_cycle_repeated_turns)
+    )
     return AnomalyGuardConfig(
-        enabled=bool(_get(raw, "enabled", cfg.enabled)),
-        window_lines=max(20, int(_get(raw, "window_lines", cfg.window_lines))),
-        probe_timeout_seconds=max(3, int(_get(raw, "probe_timeout_seconds", cfg.probe_timeout_seconds))),
-        keywords_stop=[str(x).strip() for x in _get(raw, "keywords_stop", cfg.keywords_stop)],
-        keywords_repeat=[str(x).strip() for x in _get(raw, "keywords_repeat", cfg.keywords_repeat)],
-        max_repeat_same_signature=max(2, int(_get(raw, "max_repeat_same_signature", cfg.max_repeat_same_signature))),
-        min_cycle_repeated_turns=max(2, int(min_cycle_repeated_turns)),
-        max_cycle_period=max(2, int(_get(raw, "max_cycle_period", cfg.max_cycle_period))),
-        stagnation_enabled=bool(_get(raw, "stagnation_enabled", cfg.stagnation_enabled)),
-        stagnation_min_events=max(4, int(_get(raw, "stagnation_min_events", cfg.stagnation_min_events))),
-        stagnation_min_roles=max(1, int(_get(raw, "stagnation_min_roles", cfg.stagnation_min_roles))),
-        stagnation_max_novel_cluster_ratio=max(
-            0.05,
-            min(
-                1.0,
-                float(_get(raw, "stagnation_max_novel_cluster_ratio", cfg.stagnation_max_novel_cluster_ratio)),
-            ),
+        enabled=bool(get_value(raw, "enabled", cfg.enabled)),
+        window_lines=clamp_int(get_value(raw, "window_lines", cfg.window_lines), 20),
+        probe_timeout_seconds=clamp_int(get_value(raw, "probe_timeout_seconds", cfg.probe_timeout_seconds), 3),
+        keywords_stop=parse_string_list(get_value(raw, "keywords_stop", cfg.keywords_stop)),
+        keywords_repeat=parse_string_list(get_value(raw, "keywords_repeat", cfg.keywords_repeat)),
+        max_repeat_same_signature=clamp_int(get_value(raw, "max_repeat_same_signature", cfg.max_repeat_same_signature), 2),
+        min_cycle_repeated_turns=clamp_int(min_cycle_repeated_turns, 2),
+        max_cycle_period=clamp_int(get_value(raw, "max_cycle_period", cfg.max_cycle_period), 2),
+        stagnation_enabled=bool(get_value(raw, "stagnation_enabled", cfg.stagnation_enabled)),
+        stagnation_min_events=clamp_int(get_value(raw, "stagnation_min_events", cfg.stagnation_min_events), 4),
+        stagnation_min_roles=clamp_int(get_value(raw, "stagnation_min_roles", cfg.stagnation_min_roles), 1),
+        stagnation_max_novel_cluster_ratio=clamp_float(
+            get_value(raw, "stagnation_max_novel_cluster_ratio", cfg.stagnation_max_novel_cluster_ratio),
+            0.05, 1.0
         ),
-        min_signature_chars=max(8, int(_get(raw, "min_signature_chars", cfg.min_signature_chars))),
-        auto_dispatch_check=bool(_get(raw, "auto_dispatch_check", cfg.auto_dispatch_check)),
-        dispatch_window_lines=max(1, int(_get(raw, "dispatch_window_lines", cfg.dispatch_window_lines))),
-        keywords_dispatch=[str(x).strip() for x in _get(raw, "keywords_dispatch", cfg.keywords_dispatch)],
-        min_post_dispatch_unexpected_turns=max(
-            2,
-            int(_get(raw, "min_post_dispatch_unexpected_turns", cfg.min_post_dispatch_unexpected_turns)),
+        min_signature_chars=clamp_int(get_value(raw, "min_signature_chars", cfg.min_signature_chars), 8),
+        auto_dispatch_check=bool(get_value(raw, "auto_dispatch_check", cfg.auto_dispatch_check)),
+        dispatch_window_lines=clamp_int(get_value(raw, "dispatch_window_lines", cfg.dispatch_window_lines), 1),
+        keywords_dispatch=parse_string_list(get_value(raw, "keywords_dispatch", cfg.keywords_dispatch)),
+        min_post_dispatch_unexpected_turns=clamp_int(
+            get_value(raw, "min_post_dispatch_unexpected_turns", cfg.min_post_dispatch_unexpected_turns), 2
         ),
-        keywords_architect_active=[
-            str(x).strip() for x in _get(raw, "keywords_architect_active", cfg.keywords_architect_active)
-        ],
-        similarity_enabled=bool(_get(raw, "similarity_enabled", cfg.similarity_enabled)),
-        similarity_threshold=max(0.5, min(1.0, float(_get(raw, "similarity_threshold", cfg.similarity_threshold)))),
-        similarity_min_chars=max(6, int(_get(raw, "similarity_min_chars", cfg.similarity_min_chars))),
-        max_similar_repeat=max(2, int(_get(raw, "max_similar_repeat", cfg.max_similar_repeat))),
+        keywords_architect_active=parse_string_list(
+            get_value(raw, "keywords_architect_active", cfg.keywords_architect_active)
+        ),
+        similarity_enabled=bool(get_value(raw, "similarity_enabled", cfg.similarity_enabled)),
+        similarity_threshold=clamp_float(get_value(raw, "similarity_threshold", cfg.similarity_threshold), 0.5, 1.0),
+        similarity_min_chars=clamp_int(get_value(raw, "similarity_min_chars", cfg.similarity_min_chars), 6),
+        max_similar_repeat=clamp_int(get_value(raw, "max_similar_repeat", cfg.max_similar_repeat), 2),
     )
 
 
 def _parse_notify(raw: dict[str, Any]) -> NotifyConfig:
     cfg = NotifyConfig()
     # Clamp timeouts to reasonable bounds: min 5s, max 5 minutes
-    send_timeout_seconds = min(300, max(5, int(_get(raw, "send_timeout_seconds", cfg.send_timeout_seconds))))
-    read_timeout_seconds = min(300, max(5, int(_get(raw, "read_timeout_seconds", send_timeout_seconds))))
-    level_value = str(_get(raw, "level", cfg.level)).strip().lower()
+    send_timeout_seconds = clamp_int(get_value(raw, "send_timeout_seconds", cfg.send_timeout_seconds), 5, 300)
+    read_timeout_seconds = clamp_int(get_value(raw, "read_timeout_seconds", send_timeout_seconds), 5, 300)
+    # Validate level enum
+    level_value = str(get_value(raw, "level", cfg.level)).strip().lower()
     if level_value not in {"all", "important", "critical"}:
         level_value = "all"
     return NotifyConfig(
-        channel=str(_get(raw, "channel", cfg.channel)),
-        account=str(_get(raw, "account", cfg.account)),
-        target=str(_get(raw, "target", cfg.target)),
-        silent=bool(_get(raw, "silent", cfg.silent)),
+        channel=str(get_value(raw, "channel", cfg.channel)),
+        account=str(get_value(raw, "account", cfg.account)),
+        target=str(get_value(raw, "target", cfg.target)),
+        silent=bool(get_value(raw, "silent", cfg.silent)),
         send_timeout_seconds=send_timeout_seconds,
         read_timeout_seconds=read_timeout_seconds,
-        ask_enable_ai=bool(_get(raw, "ask_enable_ai", cfg.ask_enable_ai)),
+        ask_enable_ai=bool(get_value(raw, "ask_enable_ai", cfg.ask_enable_ai)),
         # Clamp ask timeout: min 15s, max 24 hours
-        ask_timeout_seconds=min(86400, max(15, int(_get(raw, "ask_timeout_seconds", cfg.ask_timeout_seconds)))),
+        ask_timeout_seconds=clamp_int(get_value(raw, "ask_timeout_seconds", cfg.ask_timeout_seconds), 15, 86400),
         # Clamp poll interval: min 1s, max 1 hour
-        poll_interval_seconds=min(3600, max(1, int(_get(raw, "poll_interval_seconds", cfg.poll_interval_seconds)))),
-        read_limit=max(1, int(_get(raw, "read_limit", cfg.read_limit))),
+        poll_interval_seconds=clamp_int(get_value(raw, "poll_interval_seconds", cfg.poll_interval_seconds), 1, 3600),
+        read_limit=clamp_int(get_value(raw, "read_limit", cfg.read_limit), 1),
         level=level_value,
-        operator_user_ids=[str(x).strip() for x in _get(raw, "operator_user_ids", cfg.operator_user_ids)],
+        operator_user_ids=parse_string_list(get_value(raw, "operator_user_ids", cfg.operator_user_ids)),
     )
 
 
 def _parse_ai(raw: dict[str, Any]) -> AiConfig:
     cfg = AiConfig()
     return AiConfig(
-        enabled=bool(_get(raw, "enabled", cfg.enabled)),
-        provider=str(_get(raw, "provider", cfg.provider)),
-        command=str(_get(raw, "command", cfg.command)),
-        args=list(_get(raw, "args", cfg.args)),
-        model=_get(raw, "model", cfg.model),
+        enabled=bool(get_value(raw, "enabled", cfg.enabled)),
+        provider=str(get_value(raw, "provider", cfg.provider)),
+        command=str(get_value(raw, "command", cfg.command)),
+        args=list(get_value(raw, "args", cfg.args)),
+        model=get_value(raw, "model", cfg.model),
         # Clamp timeout: min 1s, max 24 hours
-        timeout_seconds=min(86400, max(1, int(_get(raw, "timeout_seconds", cfg.timeout_seconds)))),
+        timeout_seconds=clamp_int(get_value(raw, "timeout_seconds", cfg.timeout_seconds), 1, 86400),
         # Clamp max attempts: min 0, max 100 (reasonable upper bound)
-        max_attempts_per_day=min(100, max(0, int(_get(raw, "max_attempts_per_day", cfg.max_attempts_per_day)))),
+        max_attempts_per_day=clamp_int(get_value(raw, "max_attempts_per_day", cfg.max_attempts_per_day), 0, 100),
         # Clamp cooldown: min 0, max 7 days
-        cooldown_seconds=min(604800, max(0, int(_get(raw, "cooldown_seconds", cfg.cooldown_seconds)))),
-        allow_code_changes=bool(_get(raw, "allow_code_changes", cfg.allow_code_changes)),
-        args_code=list(_get(raw, "args_code", cfg.args_code)),
+        cooldown_seconds=clamp_int(get_value(raw, "cooldown_seconds", cfg.cooldown_seconds), 0, 604800),
+        allow_code_changes=bool(get_value(raw, "allow_code_changes", cfg.allow_code_changes)),
+        args_code=list(get_value(raw, "args_code", cfg.args_code)),
     )
 
 
@@ -648,15 +654,6 @@ def _config_to_dict(cfg: AppConfig) -> dict[str, Any]:
     return _filter_none(converted)
 
 
-def _section_dict(data: dict[str, Any], key: str) -> dict[str, Any]:
-    raw = data.get(key, {})
-    if raw is None:
-        return {}
-    if not isinstance(raw, dict):
-        raise TypeError(f"{key} must be an object")
-    return dict(raw)
-
-
 def _dict_to_config(data: dict[str, Any]) -> AppConfig:
     """Rebuild AppConfig from a JSON-compatible mapping."""
     if not isinstance(data, dict):
@@ -669,13 +666,13 @@ def _dict_to_config(data: dict[str, Any]) -> AppConfig:
         raise TypeError("anomaly_guard must be an object")
 
     return AppConfig(
-        monitor=_parse_monitor(_section_dict(data, "monitor")),
-        openclaw=_parse_openclaw(_section_dict(data, "openclaw")),
-        repair=_parse_repair(_section_dict(data, "repair")),
+        monitor=_parse_monitor(validate_section_dict(data, "monitor")),
+        openclaw=_parse_openclaw(validate_section_dict(data, "openclaw")),
+        repair=_parse_repair(validate_section_dict(data, "repair")),
         anomaly_guard=_parse_anomaly_guard(dict(anomaly_raw)),
-        notify=_parse_notify(_section_dict(data, "notify")),
-        ai=_parse_ai(_section_dict(data, "ai")),
-        agent_roles=_parse_agent_roles(_section_dict(data, "agent_roles")),
+        notify=_parse_notify(validate_section_dict(data, "notify")),
+        ai=_parse_ai(validate_section_dict(data, "ai")),
+        agent_roles=_parse_agent_roles(validate_section_dict(data, "agent_roles")),
     )
 
 

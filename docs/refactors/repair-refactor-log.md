@@ -19,7 +19,7 @@
 | 3 | 通知文本集中化 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 4 | 拆出 Repair 类型层 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 5 | 拆出 Repair 执行 Helper 层 | done | Claude, Codex | 2026-03-08 | 2026-03-08 | passed |
-| 6 | 提取配置验证 Helper | pending | - | - | - | - |
+| 6 | 提取配置验证 Helper | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 7 | 拆出 Stage 实现 | pending | - | - | - | - |
 | 8 | Repair.py 收敛为 Façade | pending | - | - | - | - |
 | 9 | 引入状态机 | pending | - | - | - | - |
@@ -514,31 +514,63 @@ Step 5 完成态:
 ---
 
 ### Step 6: 提取配置验证 Helper
-执行日期:
-执行人:
-状态:
+执行日期: 2026-03-08
+执行人: Claude
+状态: done
 
 修改文件:
-- 
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/config_validation.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/config.py` (更新所有 _parse_* 函数，使用新的 helper)
 
 执行内容:
-- [ ] 创建 `config_validation.py`
-- [ ] `config.py` 改用新 helper
-- [ ] 验证默认值仍来自 dataclass 默认实例
+- [x] 创建 `config_validation.py`
+- [x] `config.py` 改用新 helper
+- [x] 验证默认值仍来自 dataclass 默认实例
 
 命令记录:
 ```bash
-# pytest ...
+python -m compileall src/fix_my_claw/config.py src/fix_my_claw/config_validation.py
+python -m pytest tests/test_gui_cli_support.py -v --tb=short
+python -m pytest tests/test_anomaly_guard.py tests/test_messages.py -q --tb=short
+python -m pytest tests -q --tb=short
 ```
 
 结果摘要:
 ```text
-# config 兼容性结果
+编译检查: 通过
+test_gui_cli_support.py: 9 passed
+test_anomaly_guard.py + test_messages.py: 97 passed
+全量测试: 106 passed
+
+提取的通用 helper 函数:
+1. get_value(d, key, default) - 从 dict 获取值，处理 None
+2. clamp_int(value, min_val, max_val=None) - 整数范围限制
+3. clamp_float(value, min_val, max_val=None) - 浮点数范围限制
+4. parse_string_list(values) - 解析字符串列表，自动 strip
+5. validate_section_dict(data, key) - 提取并验证 section dict
+
+保留在 config.py 的领域逻辑:
+- official_steps 白名单过滤 (_parse_repair)
+- min_ping_pong_turns 兼容别名 (_parse_anomaly_guard)
+- notify.level 枚举校验 (_parse_notify)
+
+所有 _parse_* 函数已更新为:
+1. 使用 cfg = XxxConfig() 获取默认实例
+2. 使用 get_value(raw, "key", cfg.default_value) 获取配置值
+3. 使用 clamp_int/clamp_float 替代手动的 max/min 调用
+4. 使用 parse_string_list 替代手动的列表解析
+5. 使用 validate_section_dict 替代 _section_dict
+
+约束验证:
+- ✅ 所有默认值来自 dataclass 默认实例
+- ✅ 没有引入新的 min/max 规则（只是重构成 helper 函数）
+- ✅ _parse_* 重复验证逻辑减少（clamp/parse_string_list 复用）
 ```
 
 问题记录:
+- 无阻塞问题
 
-是否可进入下一步:
+是否可进入下一步: 是，Step 6 Gate 已通过，可以开始 Step 7
 
 ---
 

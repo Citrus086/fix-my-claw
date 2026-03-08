@@ -226,7 +226,7 @@
 - 将 helper 函数移回 `repair.py`
 
 ### Step 6: 提取配置验证 Helper
-状态: pending
+状态: done
 前置依赖: Step 5
 目标: 把配置验证中的通用 clamp/normalize 抽成 helper，同时保留领域规则。
 
