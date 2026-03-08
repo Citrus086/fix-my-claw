@@ -16,7 +16,7 @@
 | 0 | 预快照 | done | Kimi | 2026-03-08 | 2026-03-08 | passed |
 | 1 | 建立回归测试围栏 | done | Kimi, Codex | 2026-03-08 | 2026-03-08 | passed |
 | 2 | GUI Schema Drift 修复 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
-| 3 | 通知文本集中化 | pending | - | - | - | - |
+| 3 | 通知文本集中化 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 4 | 拆出 Repair 类型层 | pending | - | - | - | - |
 | 5 | 拆出 Repair 执行 Helper 层 | pending | - | - | - | - |
 | 6 | 提取配置验证 Helper | pending | - | - | - | - |
@@ -267,32 +267,62 @@ Schema 对齐完成:
 ---
 
 ### Step 3: 通知文本集中化
-执行日期:
-执行人:
-状态:
+执行日期: 2026-03-08
+执行人: Claude
+状态: done
 
 修改文件:
-- 
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/messages.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py` (更新 import，使用 messages 模块)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/notify.py` (更新 import，使用 messages 模块)
+- `/Users/mima0000/.openclaw/fix-my-claw/tests/test_messages.py` (新建)
 
 执行内容:
-- [ ] 新建 `messages.py`
-- [ ] 迁移 `repair.py` 文案
-- [ ] 迁移 `notify.py` 文案
-- [ ] 增加文案一致性测试
+- [x] 新建 `messages.py`
+- [x] 迁移 `repair.py` 文案 (15 条消息)
+- [x] 迁移 `notify.py` 文案 (2 条消息)
+- [x] 增加文案一致性测试 (23 个测试用例)
 
 命令记录:
 ```bash
-# pytest ...
+python -m pytest tests/test_messages.py -v --tb=short
+python -m pytest tests/test_anomaly_guard.py tests/test_gui_cli_support.py -q --tb=short
 ```
 
 结果摘要:
 ```text
-# 文案一致性检查结果
+test_messages.py: 23 passed
+  - TestMessagePrefix: 15 个测试验证所有消息以 'fix-my-claw:' 开头
+  - TestMessageContent: 6 个测试验证消息内容正确性
+  - TestNoHardcodedMessagesInRepair: 1 个测试验证 repair.py 无硬编码消息
+  - TestNoHardcodedMessagesInNotify: 1 个测试验证 notify.py 无硬编码消息
+
+回归测试: 83 passed
+  - test_anomaly_guard.py: 74 passed
+  - test_gui_cli_support.py: 9 passed
+
+迁移的消息清单:
+1. ai_decision_yes(source) - AI 决策 yes 通知
+2. ai_decision_no(source) - AI 决策 no 通知
+3. backup_completed(archive_path) - 备份完成通知
+4. REPAIR_STARTING - 修复开始通知
+5. REPAIR_RECOVERED_AFTER_PAUSE - PAUSE 后恢复通知
+6. REPAIR_RECOVERED_BY_OFFICIAL - 官方步骤恢复通知
+7. REPAIR_AI_DISABLED - AI 禁用通知
+8. REPAIR_AI_RATE_LIMITED - AI 限流通知
+9. REPAIR_NO_YES_RECEIVED - 未收到 yes 通知
+10. repair_backup_failed(error) - 备份失败通知
+11. REPAIR_AI_CONFIG_SUCCESS - AI 配置阶段成功通知
+12. REPAIR_AI_CODE_SUCCESS - AI 代码阶段成功通知
+13. REPAIR_FINAL_STILL_UNHEALTHY - 最终仍异常通知
+14. ask_enable_ai_prompt(account) - AI 启用询问提示
+15. ask_invalid_reply(remaining) - 无效回复提示
 ```
 
 问题记录:
+- 无阻塞问题
 
-是否可进入下一步:
+是否可进入下一步: 是，Step 3 Gate 已通过，可以开始 Step 4
 
 ---
 

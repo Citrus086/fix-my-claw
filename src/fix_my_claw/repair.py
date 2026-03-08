@@ -14,6 +14,22 @@ from typing import Any
 from .anomaly_guard import _analyze_anomaly_guard
 from .config import AppConfig
 from .health import HealthEvaluation, probe_health, probe_logs, probe_status
+from .messages import (
+    REPAIR_AI_CODE_SUCCESS,
+    REPAIR_AI_CONFIG_SUCCESS,
+    REPAIR_AI_DISABLED,
+    REPAIR_AI_RATE_LIMITED,
+    REPAIR_FINAL_STILL_UNHEALTHY,
+    REPAIR_NO_YES_RECEIVED,
+    REPAIR_RECOVERED_AFTER_PAUSE,
+    REPAIR_RECOVERED_BY_OFFICIAL,
+    REPAIR_STARTING,
+    ai_decision_no,
+    ai_decision_yes,
+    ask_enable_ai_prompt,
+    backup_completed,
+    repair_backup_failed,
+)
 from .notify import _ask_user_enable_ai, _notify_send
 from .runtime import CmdResult, run_cmd
 from .shared import (
@@ -746,9 +762,9 @@ def _ai_decision_source_label(decision: AiDecision) -> str:
 def _ai_decision_notification_text(decision: AiDecision) -> str | None:
     source = _ai_decision_source_label(decision)
     if decision.decision == "yes":
-        return f"fix-my-claw: 已收到 {source} 的 yes，开始备份并准备 Codex 修复。"
+        return ai_decision_yes(source)
     if decision.decision == "no":
-        return f"fix-my-claw: 已收到 {source} 的 no，本轮不会启用 Codex 修复。"
+        return ai_decision_no(source)
     return None
 
 
@@ -952,7 +968,7 @@ class BackupStage:
             payload=artifact,
             notification=_notify_send_with_level(
                 ctx.cfg,
-                f"fix-my-claw: 已完成备份，开始 Codex 修复。备份文件：{artifact.archive}",
+                backup_completed(artifact.archive),
                 NOTIFY_LEVEL_IMPORTANT,
                 silent=False,
             ),
@@ -1060,7 +1076,7 @@ def attempt_repair(
     )
     outcome.start_notification = _notify_send_with_level(
         cfg,
-        "fix-my-claw: 检测到异常，开始分层修复（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop -> /new -> 官方结构修复）。",
+        REPAIR_STARTING,
         NOTIFY_LEVEL_IMPORTANT,
         silent=False,
     )
@@ -1077,7 +1093,7 @@ def attempt_repair(
                     outcome.final_stage = pause_check_stage
                     outcome.final_notification = _notify_send_with_level(
                         cfg,
-                        "fix-my-claw: 已发送 PAUSE 并完成复检，系统恢复健康，跳过 /stop、/new 与结构修复。",
+                        REPAIR_RECOVERED_AFTER_PAUSE,
                         NOTIFY_LEVEL_IMPORTANT,
                     )
                     repair_log.info("recovered after soft pause: dir=%s", attempt_dir.resolve())
@@ -1091,7 +1107,7 @@ def attempt_repair(
         outcome.final_stage = official_stage
         outcome.final_notification = _notify_send_with_level(
             cfg,
-            "fix-my-claw: 分层修复已完成，系统恢复健康，无需启用 Codex 修复。",
+            REPAIR_RECOVERED_BY_OFFICIAL,
             NOTIFY_LEVEL_IMPORTANT,
         )
         repair_log.info("recovered by official steps: dir=%s", attempt_dir.resolve())
@@ -1104,7 +1120,7 @@ def attempt_repair(
         outcome.final_stage = final_stage
         outcome.final_notification = _notify_send_with_level(
             cfg,
-            "fix-my-claw: 官方修复后仍异常，且 ai.enabled=false，本轮不会发起 yes/no 与 Codex 修复，请人工介入。",
+            REPAIR_AI_DISABLED,
             NOTIFY_LEVEL_IMPORTANT,
             silent=False,
         )
@@ -1125,7 +1141,7 @@ def attempt_repair(
         outcome.final_stage = final_stage
         outcome.final_notification = _notify_send_with_level(
             cfg,
-            "fix-my-claw: Codex 修复被限流（每日次数或冷却期），本轮跳过。",
+            REPAIR_AI_RATE_LIMITED,
             NOTIFY_LEVEL_ALL,
             silent=False,
         )
@@ -1142,7 +1158,7 @@ def attempt_repair(
         else:
             outcome.final_notification = _notify_send_with_level(
                 cfg,
-                "fix-my-claw: 未收到 yes（含 no/timeout/发送失败/多次无效回复），本轮不会启用 Codex 修复。",
+                REPAIR_NO_YES_RECEIVED,
                 NOTIFY_LEVEL_IMPORTANT,
                 silent=False,
             )
@@ -1155,7 +1171,7 @@ def attempt_repair(
         outcome.final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_backup_error").run(ctx))
         outcome.final_notification = _notify_send_with_level(
             cfg,
-            f"fix-my-claw: 收到 yes，但备份失败，已停止 Codex 修复。错误：{backup_artifact.error}",
+            repair_backup_failed(backup_artifact.error),
             NOTIFY_LEVEL_IMPORTANT,
             silent=False,
         )
@@ -1168,7 +1184,7 @@ def attempt_repair(
         outcome.final_stage = ai_config_stage
         outcome.final_notification = _notify_send_with_level(
             cfg,
-            "fix-my-claw: Codex 配置阶段修复成功，系统恢复健康。",
+            REPAIR_AI_CONFIG_SUCCESS,
             NOTIFY_LEVEL_IMPORTANT,
             silent=False,
         )
@@ -1182,7 +1198,7 @@ def attempt_repair(
             outcome.final_stage = ai_code_stage
             outcome.final_notification = _notify_send_with_level(
                 cfg,
-                "fix-my-claw: Codex 代码阶段修复成功，系统恢复健康。",
+                REPAIR_AI_CODE_SUCCESS,
                 NOTIFY_LEVEL_IMPORTANT,
                 silent=False,
             )
@@ -1194,7 +1210,7 @@ def attempt_repair(
     outcome.final_stage = final_stage
     outcome.final_notification = _notify_send_with_level(
         cfg,
-        "fix-my-claw: 本轮修复结束，但系统仍异常，请人工介入排查。",
+        REPAIR_FINAL_STILL_UNHEALTHY,
         NOTIFY_LEVEL_CRITICAL,
         silent=False,
     )

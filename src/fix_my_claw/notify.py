@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
+from .messages import ask_enable_ai_prompt, ask_invalid_reply
 from .runtime import run_cmd
 from .shared import (
     _claim_ai_approval_decision,
@@ -207,11 +208,7 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
     if not cfg.notify.ask_enable_ai:
         return {"asked": False, "decision": "skip"}
     max_invalid_replies = 3
-    prompt = (
-        "fix-my-claw: 已执行分层修复（必要时含 PAUSE 复检、/stop、/new 与官方结构修复），当前仍异常。"
-        f"是否启用 Codex 修复？请 @{cfg.notify.account} 回复 是/否（Please answer with yes/no）。"
-        "（回复 yes/是 将先备份整个 ~/.openclaw 到其上级目录）"
-    )
+    prompt = ask_enable_ai_prompt(cfg.notify.account)
     try:
         sent = _notify_send(cfg, prompt, silent=False)
     except Exception as exc:
@@ -337,7 +334,7 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
                 try:
                     _notify_send(
                         cfg,
-                        f"fix-my-claw: 未识别到有效回复。请仅回复 是/否（Please answer with yes/no）。剩余 {remaining} 次。",
+                        ask_invalid_reply(remaining),
                         silent=False,
                     )
                 except Exception as notify_exc:
