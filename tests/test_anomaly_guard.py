@@ -1131,12 +1131,152 @@ class TestRepairFlow(unittest.TestCase):
             ai=config_module.AiConfig(enabled=True, allow_code_changes=False),
         )
 
+    def _isolated_cfg(
+        self,
+        *,
+        state_dir: Path | None = None,
+        repair: config_module.RepairConfig | None = None,
+        notify: config_module.NotifyConfig | None = None,
+        ai: config_module.AiConfig | None = None,
+        monitor: config_module.MonitorConfig | None = None,
+    ) -> config_module.AppConfig:
+        base_dir = state_dir or Path(tempfile.mkdtemp())
+        return config_module.AppConfig(
+            monitor=monitor
+            or config_module.MonitorConfig(
+                state_dir=base_dir,
+                log_file=base_dir / "fix-my-claw.log",
+            ),
+            repair=repair or config_module.RepairConfig(enabled=True, official_steps=[], soft_pause_enabled=False),
+            notify=notify or config_module.NotifyConfig(ask_enable_ai=True),
+            ai=ai or config_module.AiConfig(enabled=True, allow_code_changes=False),
+        )
+
     def _cmd_ok(self) -> runtime_module.CmdResult:
         return runtime_module.CmdResult(argv=["codex"], cwd=None, exit_code=0, duration_ms=1, stdout="", stderr="")
 
+    def _stage_names(self, result: repair_module.RepairResult) -> list[str]:
+        self.assertIsNotNone(result.outcome)
+        outcome = result.outcome
+        if outcome is None:
+            self.fail("expected typed repair outcome")
+        return [stage.name for stage in outcome.stages]
+
+    def _notify_messages(self, notify_mock: Mock) -> list[str]:
+        return [call.args[1] for call in notify_mock.call_args_list]
+
+    def _progress_events(self, write_mock: Mock) -> list[tuple[str, str]]:
+        return [(str(call.kwargs["stage"]), str(call.kwargs["status"])) for call in write_mock.call_args_list]
+
+    def _assert_progress_flow(self, write_mock: Mock, expected: list[tuple[str, str]]) -> None:
+        self.assertEqual(self._progress_events(write_mock), expected)
+
+    def _assert_progress_cleared(self, cfg: config_module.AppConfig, clear_mock: Mock) -> None:
+        clear_mock.assert_called_once_with(cfg.monitor.state_dir)
+        self.assertFalse((cfg.monitor.state_dir / "repair_progress.json").exists())
+
+    def test_attempt_repair_skips_when_already_healthy(self) -> None:
+        cfg = self._isolated_cfg()
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        with patch.object(
+            repair_module,
+            "_evaluate_health",
+            return_value=_make_health_evaluation(effective_healthy=True),
+        ), patch.object(
+            repair_module, "_notify_send"
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertFalse(result.attempted)
+            self.assertTrue(result.fixed)
+            self.assertFalse(result.used_ai)
+            self.assertIsNone(result.outcome)
+            self.assertTrue(result.details.get("already_healthy"))
+            notify_mock.assert_not_called()
+            self.assertEqual(write_progress_mock.call_count, 0)
+            self._assert_progress_cleared(cfg, clear_progress_mock)
+
+    def test_attempt_repair_skips_when_repair_disabled(self) -> None:
+        cfg = self._isolated_cfg(
+            repair=config_module.RepairConfig(enabled=False, official_steps=[], soft_pause_enabled=False),
+        )
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        with patch.object(
+            repair_module,
+            "_evaluate_health",
+            return_value=_make_health_evaluation(effective_healthy=False),
+        ), patch.object(
+            repair_module, "_notify_send"
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertFalse(result.attempted)
+            self.assertFalse(result.fixed)
+            self.assertFalse(result.used_ai)
+            self.assertIsNone(result.outcome)
+            self.assertTrue(result.details.get("repair_disabled"))
+            notify_mock.assert_not_called()
+            self.assertEqual(write_progress_mock.call_count, 0)
+            self._assert_progress_cleared(cfg, clear_progress_mock)
+
+    def test_attempt_repair_skips_when_cooldown_is_active(self) -> None:
+        state_dir = Path(tempfile.mkdtemp())
+        cfg = self._isolated_cfg(
+            monitor=config_module.MonitorConfig(
+                state_dir=state_dir,
+                log_file=state_dir / "fix-my-claw.log",
+                repair_cooldown_seconds=60,
+            ),
+        )
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        store.save(state_module.State(last_repair_ts=1_000))
+        with patch.object(
+            repair_module,
+            "_evaluate_health",
+            return_value=_make_health_evaluation(effective_healthy=False),
+        ), patch.object(
+            state_module, "_now_ts", return_value=1_010
+        ), patch.object(
+            repair_module, "_now_ts", return_value=1_010
+        ), patch.object(
+            repair_module, "_notify_send"
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
+            result = repair_module.attempt_repair(cfg, store, force=False, reason=None)
+            self.assertFalse(result.attempted)
+            self.assertFalse(result.fixed)
+            self.assertFalse(result.used_ai)
+            self.assertIsNone(result.outcome)
+            self.assertTrue(result.details.get("cooldown"))
+            self.assertEqual(result.details.get("cooldown_remaining_seconds"), 50)
+            notify_mock.assert_not_called()
+            self.assertEqual(write_progress_mock.call_count, 0)
+            self._assert_progress_cleared(cfg, clear_progress_mock)
+
     def test_yes_runs_backup_then_ai(self) -> None:
-        cfg = self._cfg()
-        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        cfg = self._isolated_cfg()
+        store = state_module.StateStore(cfg.monitor.state_dir)
         with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
             repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
@@ -1156,15 +1296,45 @@ class TestRepairFlow(unittest.TestCase):
             repair_module, "_run_ai_repair", return_value=self._cmd_ok()
         ) as ai_mock, patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
-        ):
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.attempted)
+            self.assertTrue(result.fixed)
             self.assertTrue(result.used_ai)
             backup_mock.assert_called_once()
             ai_mock.assert_called_once()
+            self.assertEqual(
+                self._stage_names(result),
+                ["terminate", "new", "official", "ai_decision", "backup", "ai_config"],
+            )
+            self.assertEqual(result.details.get("ai_stage"), "config")
+            self.assertIn("backup_before_ai", result.details)
+            self.assertTrue(any("Codex 配置阶段修复成功" in msg for msg in self._notify_messages(notify_mock)))
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                    ("ai_decision", "running"),
+                    ("ai_decision", "completed"),
+                    ("backup", "running"),
+                    ("backup", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
 
     def test_attempt_repair_exposes_typed_stage_pipeline(self) -> None:
-        cfg = self._cfg()
-        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        cfg = self._isolated_cfg()
+        store = state_module.StateStore(cfg.monitor.state_dir)
         with patch.object(repair_module, "_collect_context", return_value={"healthy": True}), patch.object(
             repair_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
         ), patch.object(
@@ -1175,8 +1345,19 @@ class TestRepairFlow(unittest.TestCase):
             return_value=_make_health_evaluation(effective_healthy=False),
         ), patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
-        ):
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason="anomaly_guard")
+            self.assertTrue(result.attempted)
+            self.assertTrue(result.fixed)
+            self.assertFalse(result.used_ai)
             self.assertIsNotNone(result.outcome)
             outcome = result.outcome
             if outcome is None:
@@ -1186,19 +1367,28 @@ class TestRepairFlow(unittest.TestCase):
             self.assertIsInstance(outcome.stages[2].payload, repair_module.OfficialRepairStageData)
             self.assertEqual(result.details.get("official_break_reason"), "healthy")
             self.assertEqual(result.details.get("reason"), "anomaly_guard")
+            self.assertTrue(any("分层修复已完成" in msg for msg in self._notify_messages(notify_mock)))
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
 
     def test_attempt_repair_recovers_after_soft_pause_before_hard_reset(self) -> None:
-        cfg = config_module.AppConfig(
+        cfg = self._isolated_cfg(
             repair=config_module.RepairConfig(
                 enabled=True,
                 official_steps=[],
                 soft_pause_enabled=True,
                 pause_wait_seconds=7,
             ),
-            notify=config_module.NotifyConfig(ask_enable_ai=True),
             ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
-        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(cfg.monitor.state_dir)
         pause_command = {
             "agent": "macs-orchestrator",
             "session_id": "s-1",
@@ -1221,12 +1411,21 @@ class TestRepairFlow(unittest.TestCase):
             ],
         ), patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
-        ), patch.object(
+        ) as notify_mock, patch.object(
             repair_module.time, "sleep", return_value=None
-        ) as sleep_mock:
+        ) as sleep_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertTrue(result.attempted)
             self.assertTrue(result.fixed)
+            self.assertFalse(result.used_ai)
             official_mock.assert_not_called()
             self.assertIsNotNone(result.outcome)
             outcome = result.outcome
@@ -1236,14 +1435,23 @@ class TestRepairFlow(unittest.TestCase):
             self.assertIn("pause_stage", result.details)
             self.assertEqual(result.details.get("pause_wait_seconds"), 7)
             sleep_mock.assert_called_once_with(7)
+            self.assertTrue(any("已发送 PAUSE 并完成复检" in msg for msg in self._notify_messages(notify_mock)))
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("pause", "running"),
+                    ("pause", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
 
     def test_attempt_repair_skips_soft_pause_when_status_probe_failed(self) -> None:
-        cfg = config_module.AppConfig(
+        cfg = self._isolated_cfg(
             repair=config_module.RepairConfig(enabled=True, official_steps=[], soft_pause_enabled=True),
-            notify=config_module.NotifyConfig(ask_enable_ai=True),
             ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
-        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(cfg.monitor.state_dir)
         failed_status = _make_probe("status", exit_code=1, stdout="", json_data=None)
         with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
             repair_module,
@@ -1267,15 +1475,36 @@ class TestRepairFlow(unittest.TestCase):
             ),
         ), patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
-        ):
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.attempted)
             self.assertTrue(result.fixed)
+            self.assertFalse(result.used_ai)
             self.assertIsNotNone(result.outcome)
             outcome = result.outcome
             if outcome is None:
                 self.fail("expected typed repair outcome")
             self.assertEqual([stage.name for stage in outcome.stages], ["terminate", "new", "official"])
             self.assertEqual([call.kwargs["stage_name"] for call in stage_mock.call_args_list], ["terminate", "new"])
+            self.assertEqual(result.details.get("official_break_reason"), "healthy")
+            self.assertTrue(any("分层修复已完成" in msg for msg in self._notify_messages(notify_mock)))
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
 
     def test_timeout_never_runs_ai(self) -> None:
         cfg = self._cfg()
@@ -1331,12 +1560,11 @@ class TestRepairFlow(unittest.TestCase):
             self.assertEqual(sum("已收到 GUI 的 no" in message for message in messages), 1)
 
     def test_ai_disabled_still_notifies_but_skips_yes_no_and_ai_flow(self) -> None:
-        cfg = config_module.AppConfig(
-            repair=config_module.RepairConfig(enabled=True, official_steps=[]),
-            notify=config_module.NotifyConfig(ask_enable_ai=True),
+        cfg = self._isolated_cfg(
+            repair=config_module.RepairConfig(enabled=True, official_steps=[], soft_pause_enabled=False),
             ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
-        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(cfg.monitor.state_dir)
         with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
             repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
@@ -1354,20 +1582,41 @@ class TestRepairFlow(unittest.TestCase):
             repair_module, "_run_ai_repair"
         ) as ai_mock, patch.object(
             repair_module, "_notify_send"
-        ) as notify_mock:
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.attempted)
+            self.assertFalse(result.fixed)
             self.assertFalse(result.used_ai)
             ask_mock.assert_not_called()
             ai_mock.assert_not_called()
             self.assertEqual(notify_mock.call_count, 2)
+            self.assertEqual(self._stage_names(result), ["terminate", "new", "official", "final"])
+            self.assertEqual(result.details.get("official_break_reason"), "steps_exhausted")
+            self.assertTrue(any("ai.enabled=false" in msg for msg in self._notify_messages(notify_mock)))
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
 
     def test_ai_rate_limit_skips_ask_and_ai(self) -> None:
-        cfg = config_module.AppConfig(
-            repair=config_module.RepairConfig(enabled=True, official_steps=[]),
-            notify=config_module.NotifyConfig(ask_enable_ai=True),
+        cfg = self._isolated_cfg(
+            repair=config_module.RepairConfig(enabled=True, official_steps=[], soft_pause_enabled=False),
             ai=config_module.AiConfig(enabled=True, allow_code_changes=False, max_attempts_per_day=0),
         )
-        store = state_module.StateStore(Path(tempfile.mkdtemp()))
+        store = state_module.StateStore(cfg.monitor.state_dir)
         with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
             repair_module, "_run_session_command_stage", return_value=[]
         ), patch.object(
@@ -1385,12 +1634,33 @@ class TestRepairFlow(unittest.TestCase):
             repair_module, "_run_ai_repair"
         ) as ai_mock, patch.object(
             repair_module, "_notify_send", return_value={"sent": True}
-        ):
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.attempted)
+            self.assertFalse(result.fixed)
             self.assertFalse(result.used_ai)
+            self.assertEqual(self._stage_names(result), ["terminate", "new", "official", "ai_decision", "final"])
             self.assertEqual(result.details.get("ai_decision", {}).get("decision"), "rate_limited")
             ask_mock.assert_not_called()
             ai_mock.assert_not_called()
+            self.assertTrue(any("Codex 修复被限流" in msg for msg in self._notify_messages(notify_mock)))
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
 
     def test_collect_context_keeps_stage_snapshots_immutable(self) -> None:
         attempt_dir = Path(tempfile.mkdtemp())
@@ -1565,6 +1835,280 @@ class TestRepairFlow(unittest.TestCase):
         ) as sleep_mock:
             repair_module.attempt_repair(cfg, store, force=True, reason=None)
             sleep_mock.assert_called_once_with(2)
+
+    def test_no_approval_skips_ai(self) -> None:
+        """Test that 'no' decision skips AI repair and notifies correctly."""
+        cfg = self._isolated_cfg()
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(
+            repair_module,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=False),
+            ],
+        ), patch.object(
+            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "no"}
+        ), patch.object(
+            repair_module, "_run_ai_repair"
+        ) as ai_mock, patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.attempted)
+            self.assertFalse(result.fixed)
+            self.assertFalse(result.used_ai)
+            ai_mock.assert_not_called()
+            # Verify notification about no approval - when decision is "no", 
+            # the ai_decision stage notification is reused (contains "已收到...的 no")
+            messages = [call.args[1] for call in notify_mock.call_args_list]
+            self.assertTrue(any("的 no" in msg for msg in messages))
+            # Verify stage order: terminate, new, official, ai_decision, final
+            self.assertIsNotNone(result.outcome)
+            outcome = result.outcome
+            if outcome is None:
+                self.fail("expected typed repair outcome")
+            self.assertEqual([stage.name for stage in outcome.stages], ["terminate", "new", "official", "ai_decision", "final"])
+            # Verify details contains ai_decision
+            self.assertEqual(result.details.get("ai_decision", {}).get("decision"), "no")
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                    ("ai_decision", "running"),
+                    ("ai_decision", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
+
+    def test_backup_error_stops_ai(self) -> None:
+        """Test that backup error stops AI repair and notifies correctly."""
+        cfg = self._isolated_cfg()
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(
+            repair_module,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=False),
+            ],
+        ), patch.object(
+            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
+        ), patch.object(
+            repair_module, "_backup_openclaw_state", side_effect=FileNotFoundError("state dir not found")
+        ), patch.object(
+            repair_module, "_run_ai_repair"
+        ) as ai_mock, patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.attempted)
+            self.assertFalse(result.fixed)
+            self.assertFalse(result.used_ai)
+            ai_mock.assert_not_called()
+            # Verify notification about backup error
+            messages = [call.args[1] for call in notify_mock.call_args_list]
+            self.assertTrue(any("备份失败" in msg for msg in messages))
+            # Verify details contains backup error
+            self.assertIn("backup_before_ai_error", result.details)
+            self.assertIn("state dir not found", result.details.get("backup_before_ai_error", ""))
+            self.assertEqual(
+                self._stage_names(result),
+                ["terminate", "new", "official", "ai_decision", "backup", "final"],
+            )
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                    ("ai_decision", "running"),
+                    ("ai_decision", "completed"),
+                    ("backup", "running"),
+                    ("backup", "failed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
+
+    def test_ai_code_stage_success(self) -> None:
+        """Test AI code stage success when config stage fails but code stage succeeds."""
+        cfg = self._isolated_cfg(
+            ai=config_module.AiConfig(enabled=True, allow_code_changes=True),
+        )
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        # Mock _evaluate_with_context to control the evaluation returned to stages
+        # _evaluate_with_context is called by AiRepairStage.run for each AI stage
+        def _make_context_result(effective_healthy):
+            evaluation = _make_health_evaluation(effective_healthy=effective_healthy)
+            context = {"healthy": effective_healthy}
+            return evaluation, context
+        
+        # Track calls to ensure correct order
+        call_count = [0]
+        def context_side_effect(cfg, attempt_dir, *, stage_name, log_probe_failures=False):
+            call_count[0] += 1
+            if "ai_code" in stage_name:
+                return _make_context_result(True)   # after ai_code - success
+            else:
+                return _make_context_result(False)  # after ai_config - still unhealthy
+        
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(
+            repair_module,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),  # initial
+            ],
+        ), patch.object(
+            repair_module,
+            "_evaluate_with_context",
+            side_effect=context_side_effect,
+        ), patch.object(
+            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
+        ), patch.object(
+            repair_module, "_backup_openclaw_state", return_value={"archive": "/tmp/backup.tar.gz"}
+        ), patch.object(
+            repair_module, "_run_ai_repair", return_value=self._cmd_ok()
+        ) as ai_mock, patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.attempted)
+            self.assertTrue(result.fixed)
+            self.assertTrue(result.used_ai)
+            # AI should be called twice: config and code
+            self.assertEqual(ai_mock.call_count, 2)
+            # Verify notification about code stage success
+            messages = [call.args[1] for call in notify_mock.call_args_list]
+            self.assertTrue(any("代码阶段修复成功" in msg for msg in messages), f"Messages: {messages}")
+            # Verify stage order includes ai_config and ai_code
+            self.assertIsNotNone(result.outcome)
+            outcome = result.outcome
+            if outcome is None:
+                self.fail("expected typed repair outcome")
+            stage_names = [stage.name for stage in outcome.stages]
+            self.assertEqual(
+                stage_names,
+                ["terminate", "new", "official", "ai_decision", "backup", "ai_config", "ai_code"],
+            )
+            # Verify details
+            self.assertEqual(result.details.get("ai_stage"), "code")
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                    ("ai_decision", "running"),
+                    ("ai_decision", "completed"),
+                    ("backup", "running"),
+                    ("backup", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
+
+    def test_final_failure_when_all_stages_fail(self) -> None:
+        """Test final failure when all repair stages fail."""
+        cfg = self._isolated_cfg()
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(
+            repair_module,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),  # initial
+                _make_health_evaluation(effective_healthy=False),  # after official
+                _make_health_evaluation(effective_healthy=False),  # after ai_config
+            ],
+        ), patch.object(
+            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
+        ), patch.object(
+            repair_module, "_backup_openclaw_state", return_value={"archive": "/tmp/backup.tar.gz"}
+        ), patch.object(
+            repair_module, "_run_ai_repair", return_value=self._cmd_ok()
+        ), patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
+            self.assertTrue(result.attempted)
+            self.assertFalse(result.fixed)
+            self.assertTrue(result.used_ai)
+            # Verify final failure notification
+            messages = [call.args[1] for call in notify_mock.call_args_list]
+            self.assertTrue(any("本轮修复结束，但系统仍异常" in msg for msg in messages))
+            # Verify final stage exists
+            self.assertIsNotNone(result.outcome)
+            outcome = result.outcome
+            if outcome is None:
+                self.fail("expected typed repair outcome")
+            self.assertEqual(
+                [stage.name for stage in outcome.stages],
+                ["terminate", "new", "official", "ai_decision", "backup", "ai_config", "final"],
+            )
+            # Verify details contains attempt_dir
+            self.assertIn("attempt_dir", result.details)
+            self.assertEqual(result.details.get("ai_stage"), "config")
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                    ("ai_decision", "running"),
+                    ("ai_decision", "completed"),
+                    ("backup", "running"),
+                    ("backup", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
 
 
 class TestHealthDetailsAndLogging(unittest.TestCase):

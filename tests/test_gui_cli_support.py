@@ -98,6 +98,34 @@ class TestGuiCliCommands(unittest.TestCase):
         self.assertEqual(payload["monitor"]["interval_seconds"], 75)
         self.assertTrue(payload["ai"]["enabled"])
 
+    def test_notify_level_round_trips_correctly(self) -> None:
+        """Test that notify.level field is preserved during config round-trip.
+
+        This ensures GUI won't silently reset notify.level when saving existing config.
+        See: Step 2 of repair-refactor-plan.md - GUI Schema Drift 修复
+        """
+        # Test all valid values
+        for level_value in ("all", "important", "critical"):
+            cfg = config_module.AppConfig(
+                notify=config_module.NotifyConfig(level=level_value)
+            )
+
+            data = config_module._config_to_dict(cfg)
+            self.assertEqual(data["notify"]["level"], level_value)
+
+            # Round-trip
+            rebuilt = config_module._dict_to_config(data)
+            self.assertEqual(rebuilt.notify.level, level_value)
+
+    def test_notify_level_defaults_to_all(self) -> None:
+        """Test that notify.level defaults to 'all' when not specified."""
+        cfg = config_module.NotifyConfig()
+        self.assertEqual(cfg.level, "all")
+
+        # Also test parsing from empty dict
+        parsed = config_module._parse_notify({})
+        self.assertEqual(parsed.level, "all")
+
     def test_cmd_config_set_reads_json_from_stdin_and_writes_normalized_toml(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.toml"

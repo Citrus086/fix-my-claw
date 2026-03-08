@@ -359,11 +359,25 @@ struct AdvancedSettingsView: View, ConfigBindable {
             TextField(
                 "通知目标",
                 text: binding(
-                    default: "",
+                    default: "channel:YOUR_DISCORD_CHANNEL_ID",
                     get: { $0.notify.target },
                     set: { $0.notify.target = $1 }
                 )
             )
+
+            Picker(
+                "通知级别",
+                selection: binding(
+                    default: "all",
+                    get: { $0.notify.level },
+                    set: { $0.notify.level = $1 }
+                )
+            ) {
+                Text("全部事件").tag("all")
+                Text("重要事件").tag("important")
+                Text("仅关键").tag("critical")
+            }
+            .pickerStyle(.menu)
 
             Toggle(
                 "AI 前询问",

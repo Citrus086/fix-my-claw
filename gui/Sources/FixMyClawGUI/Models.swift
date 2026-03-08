@@ -282,7 +282,7 @@ struct AnomalyGuardConfig: Codable {
 struct NotifyConfig: Codable {
     var channel: String = "discord"
     var account: String = "fix-my-claw"
-    var target: String = ""
+    var target: String = "channel:YOUR_DISCORD_CHANNEL_ID"
     var silent: Bool = true
     var sendTimeoutSeconds: Int = 20
     var readTimeoutSeconds: Int = 20
@@ -290,6 +290,7 @@ struct NotifyConfig: Codable {
     var askTimeoutSeconds: Int = 300
     var pollIntervalSeconds: Int = 5
     var readLimit: Int = 20
+    var level: String = "all"  // "all" | "important" | "critical"
     var operatorUserIds: [String] = []
 
     enum CodingKeys: String, CodingKey {
@@ -303,6 +304,7 @@ struct NotifyConfig: Codable {
         case askTimeoutSeconds = "ask_timeout_seconds"
         case pollIntervalSeconds = "poll_interval_seconds"
         case readLimit = "read_limit"
+        case level
         case operatorUserIds = "operator_user_ids"
     }
 }
