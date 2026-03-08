@@ -23,7 +23,8 @@
 | 7 | 拆出 Stage 实现 | done | Claude, Codex | 2026-03-08 | 2026-03-08 | passed |
 | 8 | Repair.py 收敛为 Façade | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 9 | 引入状态机 | done | Codex | 2026-03-09 | 2026-03-09 | passed |
-| 10 | 最终兼容性收尾 | pending | - | - | - | - |
+| 10 | 最终兼容性收尾 | done | Claude | 2026-03-09 | 2026-03-09 | passed |
+| 11 | 后续结构收敛 | done | Codex | 2026-03-09 | 2026-03-09 | passed |
 
 状态约定:
 - `pending`: 未开始
@@ -36,9 +37,9 @@
 
 | 锁组 | 涉及文件 | 当前持有者 | 备注 |
 |------|----------|------------|------|
-| repair-core | `repair.py`、`repair_types.py`、`repair_ops.py`、`stages/`、`repair_state_machine.py` | - | 同时只能一个窗口写 |
-| config-gui | `config.py`、`config_validation.py`、GUI 配置相关文件 | - | 尽量避免和 repair-core 并行写 |
-| docs | `docs/refactors/` | - | 可并行，但不得修改计划结论 |
+| repair-core | `repair.py`、`repair_types.py`、`repair_ops.py`、`stages/`、`repair_state_machine.py` | - | Step 11 完成，已释放 |
+| config-gui | `config.py`、`config_validation.py`、GUI 配置相关文件 | - | 重构完成，已释放 |
+| docs | `docs/refactors/` | - | 重构完成，已释放 |
 
 ## 执行记录
 
@@ -812,32 +813,150 @@ Step 9 回归:
 ---
 
 ### Step 10: 最终兼容性收尾
-执行日期:
-执行人:
-状态:
+执行日期: 2026-03-09
+执行人: Claude
+状态: done
 
 修改文件:
-- 
+- `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/repair-refactor-plan.md` (更新 Step 10 状态为 done)
+- `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/repair-refactor-log.md` (登记 Step 10 执行记录)
 
 执行内容:
-- [ ] 全量测试
-- [ ] CLI JSON / state 文件 / attempts 目录检查
-- [ ] 文档同步
+- [x] 全量测试
+- [x] CLI JSON 回归检查 (config show --json, status --json, check --json)
+- [x] repair_progress.json 与 attempts/ 目录验证
+- [x] state.json 格式验证
+- [x] 文档同步
 
 命令记录:
 ```bash
-# pytest tests -v
-# 其他兼容性检查命令
+python -m pytest tests -v --tb=short
+.venv/bin/fix-my-claw config show --json
+.venv/bin/fix-my-claw status --json
+.venv/bin/fix-my-claw check --json
+cat ~/.fix-my-claw/state.json
+ls ~/.fix-my-claw/attempts/
 ```
 
 结果摘要:
 ```text
-# 最终验证结果
+全量测试: 106 passed in 4.59s
+  - test_anomaly_guard.py: 74 passed
+  - test_gui_cli_support.py: 9 passed
+  - test_messages.py: 23 passed
+
+CLI JSON 兼容性:
+- config show --json: 正常输出，包含 monitor/openclaw/repair/ai/anomaly_guard/notify 配置
+- status --json: 正常输出，包含 enabled/config_path/state_path/last_ok_ts/last_repair_ts 等字段
+- check --json: 正常输出，包含 healthy/probe_healthy/reason/health/status/logs/anomaly_guard/loop_guard
+
+状态文件格式:
+- state.json: 包含 enabled/last_ok_ts/last_repair_ts/last_ai_ts/ai_attempts_day/ai_attempts_count
+- repair_progress.json: 修复完成后正常清理 (符合预期)
+- attempts/ 目录: 命名格式 YYYYMMDD-HHMMSS-<suffix>，符合规范
+
+核心原则验证:
+✅ CLI JSON 输出格式无变化
+✅ TOML 配置结构、字段名和默认值无变化
+✅ state.json 格式无变化
+✅ attempts/ 目录结构和文件命名无变化
+✅ 所有用户可见通知文案无变化 (通过 messages.py 集中管理)
+✅ RepairResult.details 的 legacy key 无变化
+✅ stage 名称无变化
+✅ stage 执行顺序无变化
+✅ mark_repair_attempt() 与 mark_ai_attempt() 调用时机无变化
+✅ clear_repair_progress() 早退时机无变化
 ```
 
 问题记录:
+- 无阻塞问题
+- 所有兼容性检查通过，重构完成
 
-是否可进入下一步:
+是否可进入下一步: 重构完成，无需进入下一步
+
+---
+
+### Step 11: 后续结构收敛
+执行日期: 2026-03-09
+执行人: Codex
+状态: done
+
+修改文件:
+- `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/repair-refactor-plan.md` (新增 Step 11，完成后同步状态为 completed)
+- `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/repair-refactor-log.md` (登记变更建议、锁组状态和 Step 11 执行记录)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py` (分层整理 `__all__`，补上 `attempt_repair`，按 runtime/messages/stages 组装状态机 hooks)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair_ops.py` (引入 `_resolve_default()`，收敛依赖默认值注入样板)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair_state_machine.py` (将 hooks 拆为 `RepairRuntimeHooks` / `RepairMessageHooks` / `RepairStageHooks`)
+- `/Users/mima0000/.openclaw/fix-my-claw/tests/test_anomaly_guard.py` (新增 2 个结构兼容测试)
+
+执行内容:
+- [x] 先核对 `git status --short`，确认本轮开始时仅文档文件为已修改状态
+- [x] 在“变更建议记录”中登记新增 Step 11，并更新计划文档使其成为当前 `in_progress` 步骤
+- [x] 将 `repair.py` 的导出声明按“公共 API / 兼容导出”分层整理，保留既有兼容符号
+- [x] 将状态机 hooks 拆分为 runtime/messages/stages 三组，不改控制流和 stage 行为
+- [x] 用 `_resolve_default()` 收敛 `repair_ops.py` 里的依赖注入样板
+- [x] 增加结构兼容测试，锁住 `attempt_repair` 导出和 hooks 分组
+- [x] 运行 repair 回归与全量测试
+
+命令记录:
+```bash
+git status --short
+python -m compileall src/fix_my_claw/repair.py src/fix_my_claw/repair_ops.py src/fix_my_claw/repair_state_machine.py tests/test_anomaly_guard.py -q
+python -m pytest tests/test_anomaly_guard.py -q
+python -m pytest tests/test_gui_cli_support.py tests/test_messages.py -q
+python -m pytest tests -q
+python - <<'PY'
+from fix_my_claw import repair as repair_module
+print('repair.__all__ count =', len(repair_module.__all__))
+print('attempt_repair in __all__ =', 'attempt_repair' in repair_module.__all__)
+PY
+python - <<'PY'
+import ast, pathlib
+p = pathlib.Path('src/fix_my_claw/repair_state_machine.py')
+mod = ast.parse(p.read_text())
+for node in mod.body:
+    if isinstance(node, ast.ClassDef) and node.name in {'RepairRuntimeHooks', 'RepairMessageHooks', 'RepairStageHooks', 'RepairStateMachineHooks'}:
+        ann = [n.target.id for n in node.body if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)]
+        print(node.name, len(ann))
+PY
+```
+
+结果摘要:
+```text
+起始 Git Status:
+- M docs/refactors/repair-refactor-log.md
+- M docs/refactors/repair-refactor-plan.md
+
+结构收敛结果:
+- repair.py: `__all__` 改为 7 组分层导出，且显式补入 `attempt_repair`
+- repair.__all__: 59 个符号；`attempt_repair in __all__ = True`
+- repair_state_machine.py:
+  - RepairRuntimeHooks: 12 个字段
+  - RepairMessageHooks: 13 个字段
+  - RepairStageHooks: 9 个字段
+  - RepairStateMachineHooks: 3 个聚合字段
+- repair_ops.py: 依赖默认值注入样板改为 `_resolve_default()`；剩余 `if ... is None` 仅保留 3 处真实控制流判断
+
+测试结果:
+- tests/test_anomaly_guard.py: 76 passed
+- tests/test_gui_cli_support.py + tests/test_messages.py: 32 passed
+- tests/: 108 passed
+
+额外结论:
+- `config.py` 已实际使用 `clamp_int/get_value`；用户提出的第 4 点不再构成待处理项，因此未纳入 Step 11
+- 本轮未删除任何现有兼容导出，也未改变用户可见行为
+```
+
+问题记录:
+- 无阻塞问题
+- `repair.py.__all__` 原先未包含 `attempt_repair`，本轮已修正为显式公共导出
+- `RepairStateMachineHooks` 现按职责拆组，但未移除现有兼容导出面；若后续要进一步删减 compat surface，需要单独立项
+
+下一步建议:
+- 当前无需继续执行后续 step
+- 如果要继续压缩 `repair.py` 的兼容导出面，建议单独新增“兼容面裁剪”步骤，并先明确是否接受 `from fix_my_claw.repair import *` 行为变化
+
+是否可进入下一步: Step 11 Gate 已通过；当前计划重新回到 completed
 
 ---
 
@@ -851,14 +970,16 @@ Step 9 回归:
 
 | 日期 | Step | 原计划 | 建议变更 | 理由 | 决定 |
 |------|------|--------|----------|------|------|
-| - | - | - | - | - | - |
+| 2026-03-09 | 11 | Step 10 已收尾，计划状态为 completed | 新增 Step 11“后续结构收敛”，仅处理 `repair.py` / `repair_ops.py` / `repair_state_machine.py` 的内部结构优化 | 当前无 `in_progress` 步骤，按规则不能继续编码；同时用户提出的 `__all__`、hooks 聚合、依赖注入样板问题中，前三项具备明确的结构收益。`config.py` 优化建议经核查已基本完成，因此不纳入本轮 | approved |
 
 ## 交接检查清单
 
 每次交接前必须确认:
-- [ ] 当前步骤状态已更新
-- [ ] 锁组占用已更新
-- [ ] 修改文件已登记
-- [ ] 执行命令已登记
-- [ ] gate 结果已登记
-- [ ] 下一步是否允许开始已明确
+- [x] 当前步骤状态已更新
+- [x] 锁组占用已更新
+- [x] 修改文件已登记
+- [x] 执行命令已登记
+- [x] gate 结果已登记
+- [x] 下一步是否允许开始已明确
+
+**重构已全部完成！**

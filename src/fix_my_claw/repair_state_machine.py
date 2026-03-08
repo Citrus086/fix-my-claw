@@ -63,7 +63,7 @@ class RepairMachineState(str, Enum):
 
 
 @dataclass(frozen=True)
-class RepairStateMachineHooks:
+class RepairRuntimeHooks:
     attempt_dir_fn: Callable[[AppConfig], Path]
     clear_repair_progress_fn: Callable[[Path], None]
     collect_context_fn: Callable[..., dict[str, Any]]
@@ -76,6 +76,10 @@ class RepairStateMachineHooks:
     session_stage_has_successful_commands_fn: Callable[[StageResult], bool]
     should_try_soft_pause_fn: Callable[[AppConfig, HealthEvaluation], bool]
     write_repair_progress_fn: Callable[..., None]
+
+
+@dataclass(frozen=True)
+class RepairMessageHooks:
     repair_starting_message: str
     recovered_after_pause_message: str
     recovered_by_official_message: str
@@ -89,6 +93,10 @@ class RepairStateMachineHooks:
     notify_level_all: str
     notify_level_important: str
     notify_level_critical: str
+
+
+@dataclass(frozen=True)
+class RepairStageHooks:
     session_pause_stage_cls: type[Any]
     pause_assessment_stage_cls: type[Any]
     session_terminate_stage_cls: type[Any]
@@ -98,6 +106,13 @@ class RepairStateMachineHooks:
     backup_stage_cls: type[Any]
     ai_repair_stage_cls: type[Any]
     final_assessment_stage_cls: type[Any]
+
+
+@dataclass(frozen=True)
+class RepairStateMachineHooks:
+    runtime: RepairRuntimeHooks
+    messages: RepairMessageHooks
+    stages: RepairStageHooks
 
 
 @dataclass
@@ -120,6 +135,18 @@ class RepairStateMachine:
     ai_config_stage: StageResult | None = None
     ai_code_stage: StageResult | None = None
     terminal_result: RepairResult | None = None
+
+    @property
+    def runtime(self) -> RepairRuntimeHooks:
+        return self.hooks.runtime
+
+    @property
+    def messages(self) -> RepairMessageHooks:
+        return self.hooks.messages
+
+    @property
+    def stages(self) -> RepairStageHooks:
+        return self.hooks.stages
 
     def run(self) -> RepairResult:
         while self.state is not RepairMachineState.DONE:
@@ -195,15 +222,15 @@ class RepairStateMachine:
         raise AssertionError(f"unexpected repair state: {self.state}")
 
     def _check_initial_health(self) -> RepairMachineState:
-        self.initial_evaluation = self.hooks.evaluate_health_fn(
+        self.initial_evaluation = self.runtime.evaluate_health_fn(
             self.cfg,
             log_probe_failures=False,
             capture_logs=True,
-            logs_timeout_seconds=self.hooks.context_logs_timeout_seconds_fn(self.cfg),
+            logs_timeout_seconds=self.runtime.context_logs_timeout_seconds_fn(self.cfg),
         )
         if self.initial_evaluation.effective_healthy:
             self.logger.info("repair skipped: already healthy")
-            self.hooks.clear_repair_progress_fn(self.cfg.monitor.state_dir)
+            self.runtime.clear_repair_progress_fn(self.cfg.monitor.state_dir)
             self.terminal_result = RepairResult(
                 attempted=False,
                 fixed=True,
@@ -217,7 +244,7 @@ class RepairStateMachine:
         if self.cfg.repair.enabled:
             return RepairMachineState.CHECK_REPAIR_COOLDOWN
         self.logger.warning("repair skipped: disabled by config")
-        self.hooks.clear_repair_progress_fn(self.cfg.monitor.state_dir)
+        self.runtime.clear_repair_progress_fn(self.cfg.monitor.state_dir)
         self.terminal_result = RepairResult(
             attempted=False,
             fixed=False,
@@ -232,13 +259,13 @@ class RepairStateMachine:
         details: dict[str, object] = {"cooldown": True}
         state = self.store.load()
         if state.last_repair_ts is not None:
-            elapsed = self.hooks.now_ts_fn() - state.last_repair_ts
+            elapsed = self.runtime.now_ts_fn() - state.last_repair_ts
             remaining = max(0, self.cfg.monitor.repair_cooldown_seconds - elapsed)
             details["cooldown_remaining_seconds"] = remaining
             self.logger.info("repair skipped: cooldown (%ss remaining)", remaining)
         else:
             self.logger.info("repair skipped: cooldown")
-        self.hooks.clear_repair_progress_fn(self.cfg.monitor.state_dir)
+        self.runtime.clear_repair_progress_fn(self.cfg.monitor.state_dir)
         self.terminal_result = RepairResult(
             attempted=False,
             fixed=False,
@@ -249,37 +276,37 @@ class RepairStateMachine:
 
     def _start_attempt(self) -> RepairMachineState:
         initial_evaluation = self._initial_evaluation()
-        attempt_dir = self.hooks.attempt_dir_fn(self.cfg)
+        attempt_dir = self.runtime.attempt_dir_fn(self.cfg)
         self.store.mark_repair_attempt()
         self.ctx = RepairPipelineContext(cfg=self.cfg, store=self.store, attempt_dir=attempt_dir)
         self.outcome = RepairOutcome(attempt_dir=str(attempt_dir.resolve()), reason=self.reason)
         self.logger.info("starting repair attempt: dir=%s", attempt_dir.resolve())
-        self.hooks.write_repair_progress_fn(
+        self.runtime.write_repair_progress_fn(
             self.cfg.monitor.state_dir,
             stage="starting",
             status="running",
             attempt_dir=str(attempt_dir.resolve()),
         )
-        self._outcome().start_notification = self.hooks.notify_send_with_level_fn(
+        self._outcome().start_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.hooks.repair_starting_message,
-            self.hooks.notify_level_important,
+            self.messages.repair_starting_message,
+            self.messages.notify_level_important,
             silent=False,
         )
-        self._outcome().before_context = self.hooks.collect_context_fn(initial_evaluation, attempt_dir, stage_name="before")
+        self._outcome().before_context = self.runtime.collect_context_fn(initial_evaluation, attempt_dir, stage_name="before")
         return RepairMachineState.CHECK_SOFT_PAUSE
 
     def _check_soft_pause(self) -> RepairMachineState:
-        if self.hooks.should_try_soft_pause_fn(self.cfg, self._initial_evaluation()):
+        if self.runtime.should_try_soft_pause_fn(self.cfg, self._initial_evaluation()):
             return RepairMachineState.RUN_PAUSE
         return RepairMachineState.RUN_TERMINATE
 
     def _run_pause(self) -> RepairMachineState:
-        pause_candidate = self.hooks.session_pause_stage_cls().run(self._ctx())
-        pause_payload = self.hooks.require_stage_payload_fn(pause_candidate, SessionStageData)
+        pause_candidate = self.stages.session_pause_stage_cls().run(self._ctx())
+        pause_payload = self.runtime.require_stage_payload_fn(pause_candidate, SessionStageData)
         if pause_payload.commands:
             self.pause_stage = self._outcome().add_stage(pause_candidate)
-            if self.hooks.session_stage_has_successful_commands_fn(self.pause_stage):
+            if self.runtime.session_stage_has_successful_commands_fn(self.pause_stage):
                 return RepairMachineState.RUN_PAUSE_ASSESSMENT
         return RepairMachineState.RUN_TERMINATE
 
@@ -287,32 +314,32 @@ class RepairStateMachine:
         if self.pause_stage is None:
             raise RuntimeError("pause assessment requires a pause stage result")
         pause_check_stage = self._outcome().add_stage(
-            self.hooks.pause_assessment_stage_cls().run(self._ctx(), previous_stage=self.pause_stage)
+            self.stages.pause_assessment_stage_cls().run(self._ctx(), previous_stage=self.pause_stage)
         )
         if not pause_check_stage.fixed:
             return RepairMachineState.RUN_TERMINATE
         self._outcome().final_stage = pause_check_stage
-        self._outcome().final_notification = self.hooks.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.hooks.recovered_after_pause_message,
-            self.hooks.notify_level_important,
+            self.messages.recovered_after_pause_message,
+            self.messages.notify_level_important,
         )
         self.logger.info("recovered after soft pause: dir=%s", self._ctx().attempt_dir.resolve())
         self._finish_attempt()
         return RepairMachineState.DONE
 
     def _run_terminate(self) -> RepairMachineState:
-        self.terminate_stage = self._outcome().add_stage(self.hooks.session_terminate_stage_cls().run(self._ctx()))
+        self.terminate_stage = self._outcome().add_stage(self.stages.session_terminate_stage_cls().run(self._ctx()))
         return RepairMachineState.RUN_RESET
 
     def _run_reset(self) -> RepairMachineState:
         self._outcome().add_stage(
-            self.hooks.session_reset_stage_cls().run(self._ctx(), previous_stage=self.terminate_stage)
+            self.stages.session_reset_stage_cls().run(self._ctx(), previous_stage=self.terminate_stage)
         )
         return RepairMachineState.RUN_OFFICIAL
 
     def _run_official(self) -> RepairMachineState:
-        self.official_stage = self._outcome().add_stage(self.hooks.official_repair_stage_cls().run(self._ctx()))
+        self.official_stage = self._outcome().add_stage(self.stages.official_repair_stage_cls().run(self._ctx()))
         return RepairMachineState.CHECK_OFFICIAL_RESULT
 
     def _check_official_result(self) -> RepairMachineState:
@@ -321,10 +348,10 @@ class RepairStateMachine:
         if not self.official_stage.fixed:
             return RepairMachineState.CHECK_AI_ENABLED
         self._outcome().final_stage = self.official_stage
-        self._outcome().final_notification = self.hooks.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.hooks.recovered_by_official_message,
-            self.hooks.notify_level_important,
+            self.messages.recovered_by_official_message,
+            self.messages.notify_level_important,
         )
         self.logger.info("recovered by official steps: dir=%s", self._ctx().attempt_dir.resolve())
         self._finish_attempt()
@@ -337,12 +364,12 @@ class RepairStateMachine:
 
     def _run_ai_disabled_exit(self) -> RepairMachineState:
         self.logger.info("Codex-assisted remediation disabled; leaving OpenClaw unhealthy")
-        final_stage = self._outcome().add_stage(self.hooks.final_assessment_stage_cls(stage_name="final_no_ai").run(self._ctx()))
+        final_stage = self._outcome().add_stage(self.stages.final_assessment_stage_cls(stage_name="final_no_ai").run(self._ctx()))
         self._outcome().final_stage = final_stage
-        self._outcome().final_notification = self.hooks.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.hooks.ai_disabled_message,
-            self.hooks.notify_level_important,
+            self.messages.ai_disabled_message,
+            self.messages.notify_level_important,
             silent=False,
         )
         self._finish_attempt()
@@ -364,25 +391,27 @@ class RepairStateMachine:
                 payload=AiDecision.from_mapping({"asked": False, "decision": "rate_limited"}),
             )
         )
-        final_stage = self._outcome().add_stage(self.hooks.final_assessment_stage_cls(stage_name="final_rate_limited").run(self._ctx()))
+        final_stage = self._outcome().add_stage(
+            self.stages.final_assessment_stage_cls(stage_name="final_rate_limited").run(self._ctx())
+        )
         self._outcome().final_stage = final_stage
-        self._outcome().final_notification = self.hooks.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.hooks.ai_rate_limited_message,
-            self.hooks.notify_level_all,
+            self.messages.ai_rate_limited_message,
+            self.messages.notify_level_all,
             silent=False,
         )
         self._finish_attempt()
         return RepairMachineState.DONE
 
     def _run_ai_decision(self) -> RepairMachineState:
-        self.ai_decision_stage = self._outcome().add_stage(self.hooks.ai_decision_stage_cls().run(self._ctx()))
+        self.ai_decision_stage = self._outcome().add_stage(self.stages.ai_decision_stage_cls().run(self._ctx()))
         return RepairMachineState.CHECK_AI_DECISION
 
     def _check_ai_decision(self) -> RepairMachineState:
         if self.ai_decision_stage is None:
             raise RuntimeError("AI decision check requires an AI decision stage result")
-        ai_decision = self.hooks.require_stage_payload_fn(self.ai_decision_stage, AiDecision)
+        ai_decision = self.runtime.require_stage_payload_fn(self.ai_decision_stage, AiDecision)
         if ai_decision.decision == "yes":
             return RepairMachineState.RUN_BACKUP
         return RepairMachineState.RUN_NO_APPROVAL_EXIT
@@ -390,22 +419,22 @@ class RepairStateMachine:
     def _run_no_approval_exit(self) -> RepairMachineState:
         if self.ai_decision_stage is None:
             raise RuntimeError("no-approval exit requires an AI decision stage result")
-        final_stage = self._outcome().add_stage(self.hooks.final_assessment_stage_cls(stage_name="final_no_approval").run(self._ctx()))
+        final_stage = self._outcome().add_stage(self.stages.final_assessment_stage_cls(stage_name="final_no_approval").run(self._ctx()))
         self._outcome().final_stage = final_stage
         if self.ai_decision_stage.notification is not None:
             self._outcome().final_notification = self.ai_decision_stage.notification
         else:
-            self._outcome().final_notification = self.hooks.notify_send_with_level_fn(
+            self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
                 self.cfg,
-                self.hooks.no_yes_received_message,
-                self.hooks.notify_level_important,
+                self.messages.no_yes_received_message,
+                self.messages.notify_level_important,
                 silent=False,
             )
         self._finish_attempt()
         return RepairMachineState.DONE
 
     def _run_backup(self) -> RepairMachineState:
-        self.backup_stage = self._outcome().add_stage(self.hooks.backup_stage_cls().run(self._ctx()))
+        self.backup_stage = self._outcome().add_stage(self.stages.backup_stage_cls().run(self._ctx()))
         return RepairMachineState.CHECK_BACKUP_RESULT
 
     def _check_backup_result(self) -> RepairMachineState:
@@ -418,14 +447,14 @@ class RepairStateMachine:
     def _run_backup_error_exit(self) -> RepairMachineState:
         if self.backup_stage is None:
             raise RuntimeError("backup-error exit requires a backup stage result")
-        backup_artifact = self.hooks.require_stage_payload_fn(self.backup_stage, BackupArtifact)
+        backup_artifact = self.runtime.require_stage_payload_fn(self.backup_stage, BackupArtifact)
         self._outcome().final_stage = self._outcome().add_stage(
-            self.hooks.final_assessment_stage_cls(stage_name="final_backup_error").run(self._ctx())
+            self.stages.final_assessment_stage_cls(stage_name="final_backup_error").run(self._ctx())
         )
-        self._outcome().final_notification = self.hooks.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.hooks.repair_backup_failed_fn(backup_artifact.error),
-            self.hooks.notify_level_important,
+            self.messages.repair_backup_failed_fn(backup_artifact.error),
+            self.messages.notify_level_important,
             silent=False,
         )
         self._finish_attempt()
@@ -436,7 +465,7 @@ class RepairStateMachine:
         return RepairMachineState.RUN_AI_CONFIG
 
     def _run_ai_config(self) -> RepairMachineState:
-        self.ai_config_stage = self._outcome().add_stage(self.hooks.ai_repair_stage_cls(code_stage=False).run(self._ctx()))
+        self.ai_config_stage = self._outcome().add_stage(self.stages.ai_repair_stage_cls(code_stage=False).run(self._ctx()))
         return RepairMachineState.CHECK_AI_CONFIG_RESULT
 
     def _check_ai_config_result(self) -> RepairMachineState:
@@ -450,10 +479,10 @@ class RepairStateMachine:
         if self.ai_config_stage is None:
             raise RuntimeError("AI config success exit requires an AI config stage result")
         self._outcome().final_stage = self.ai_config_stage
-        self._outcome().final_notification = self.hooks.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.hooks.ai_config_success_message,
-            self.hooks.notify_level_important,
+            self.messages.ai_config_success_message,
+            self.messages.notify_level_important,
             silent=False,
         )
         self.logger.info("recovered by Codex-assisted remediation: dir=%s", self._ctx().attempt_dir.resolve())
@@ -466,7 +495,7 @@ class RepairStateMachine:
         return RepairMachineState.RUN_FINAL_ASSESSMENT
 
     def _run_ai_code(self) -> RepairMachineState:
-        self.ai_code_stage = self._outcome().add_stage(self.hooks.ai_repair_stage_cls(code_stage=True).run(self._ctx()))
+        self.ai_code_stage = self._outcome().add_stage(self.stages.ai_repair_stage_cls(code_stage=True).run(self._ctx()))
         return RepairMachineState.CHECK_AI_CODE_RESULT
 
     def _check_ai_code_result(self) -> RepairMachineState:
@@ -480,10 +509,10 @@ class RepairStateMachine:
         if self.ai_code_stage is None:
             raise RuntimeError("AI code success exit requires an AI code stage result")
         self._outcome().final_stage = self.ai_code_stage
-        self._outcome().final_notification = self.hooks.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.hooks.ai_code_success_message,
-            self.hooks.notify_level_important,
+            self.messages.ai_code_success_message,
+            self.messages.notify_level_important,
             silent=False,
         )
         self.logger.info("recovered by code-stage remediation: dir=%s", self._ctx().attempt_dir.resolve())
@@ -491,12 +520,12 @@ class RepairStateMachine:
         return RepairMachineState.DONE
 
     def _run_final_assessment(self) -> RepairMachineState:
-        final_stage = self._outcome().add_stage(self.hooks.final_assessment_stage_cls(stage_name="final").run(self._ctx()))
+        final_stage = self._outcome().add_stage(self.stages.final_assessment_stage_cls(stage_name="final").run(self._ctx()))
         self._outcome().final_stage = final_stage
-        self._outcome().final_notification = self.hooks.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
             self.cfg,
-            self.hooks.final_still_unhealthy_message,
-            self.hooks.notify_level_critical,
+            self.messages.final_still_unhealthy_message,
+            self.messages.notify_level_critical,
             silent=False,
         )
         self.logger.warning(
@@ -509,8 +538,8 @@ class RepairStateMachine:
         return RepairMachineState.DONE
 
     def _finish_attempt(self) -> None:
-        self.hooks.clear_repair_progress_fn(self.cfg.monitor.state_dir)
-        self.terminal_result = self.hooks.result_from_outcome_fn(
+        self.runtime.clear_repair_progress_fn(self.cfg.monitor.state_dir)
+        self.terminal_result = self.runtime.result_from_outcome_fn(
             attempted=True,
             outcome=self._outcome(),
         )

@@ -2411,5 +2411,25 @@ class TestMonitorLoop(unittest.TestCase):
         )
 
 
+class TestRepairFacadeStructure(unittest.TestCase):
+    def test_repair_all_includes_public_entry_and_compat_symbols(self) -> None:
+        self.assertIn("attempt_repair", repair_module.__all__)
+        self.assertIn("RepairResult", repair_module.__all__)
+        self.assertIn("_evaluate_health", repair_module.__all__)
+        self.assertIn("SessionPauseStage", repair_module.__all__)
+
+    def test_state_machine_hooks_are_grouped_without_dropping_compat_exports(self) -> None:
+        hooks = repair_module._build_repair_state_machine_hooks()
+
+        self.assertTrue(hasattr(hooks, "runtime"))
+        self.assertTrue(hasattr(hooks, "messages"))
+        self.assertTrue(hasattr(hooks, "stages"))
+        self.assertTrue(callable(hooks.runtime.evaluate_health_fn))
+        self.assertTrue(callable(hooks.messages.repair_backup_failed_fn))
+        self.assertIs(hooks.stages.session_pause_stage_cls, repair_module.SessionPauseStage)
+        self.assertTrue(callable(repair_module._evaluate_health))
+        self.assertTrue(callable(repair_module._run_ai_repair))
+
+
 if __name__ == "__main__":
     unittest.main()

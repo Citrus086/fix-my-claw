@@ -2,8 +2,8 @@
 
 ## 版本信息
 - 创建日期: 2026-03-08
-- 计划版本: v1.2
-- 当前状态: step10
+- 计划版本: v1.3
+- 当前状态: completed
 - 目标周期: 10-14 天
 - 风险等级: 中高
 
@@ -58,6 +58,7 @@
 8. Repair.py 收敛为 Façade
 9. 引入状态机
 10. 最终兼容性收尾
+11. 后续结构收敛
 
 ## 步骤详情
 
@@ -324,7 +325,7 @@
 - 保留旧 orchestration 的可恢复版本，必要时回切
 
 ### Step 10: 最终兼容性收尾
-状态: pending
+状态: done
 前置依赖: Step 9
 目标: 做最后一轮兼容性校验和过渡代码清理。
 
@@ -348,6 +349,37 @@
 
 回滚:
 - 按日志回退到最近一个稳定步骤
+
+### Step 11: 后续结构收敛
+状态: done
+前置依赖: Step 10
+目标: 在不改变兼容行为的前提下，进一步收敛 repair 内部结构，减少 façade 和状态机的维护噪音。
+
+允许修改:
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py`
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair_ops.py`
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair_state_machine.py`
+- `/Users/mima0000/.openclaw/fix-my-claw/tests/test_anomaly_guard.py`
+- `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/repair-refactor-plan.md`
+- `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/repair-refactor-log.md`
+
+必须完成:
+- 将 `repair.py` 的导出声明按“公共 API / 兼容导出”分层整理，提升可读性
+- 将 `RepairStateMachineHooks` 拆成更聚焦的 hook 组，降低单个 dataclass 的耦合度
+- 减少 `repair_ops.py` 中依赖默认值注入的样板代码，但保留现有函数签名和 patch surface
+
+明确不做:
+- 未经额外批准，不从 `repair.py` 删除现有可直接 import 的兼容符号
+- 不修改 `config.py`；当前 `clamp_int/get_value` 已被实际使用，本轮不再重复处理
+- 不改变任何用户可见文案、stage 名称、stage 顺序、状态文件格式或 CLI JSON
+
+完成 gate:
+- 结构改动完成后，既有 repair 回归测试通过
+- `repair.py` 的兼容导出仍可直接 import
+- 文档同步更新，明确记录本轮只做结构收敛，不做行为变更
+
+回滚:
+- 回退 `repair.py`、`repair_ops.py`、`repair_state_machine.py` 到 Step 10 完成态
 
 ## 每步统一检查项
 每个步骤结束时都要在日志中记录:

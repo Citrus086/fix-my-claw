@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from string import Template
-from typing import Any
+from typing import Any, TypeVar
 
 from .config import AppConfig
 from .health import HealthEvaluation, probe_health, probe_logs, probe_status
@@ -31,6 +31,12 @@ NOTIFY_LEVEL_ALL = "all"
 NOTIFY_LEVEL_IMPORTANT = "important"
 NOTIFY_LEVEL_CRITICAL = "critical"
 
+_T = TypeVar("_T")
+
+
+def _resolve_default(value: _T | None, default: _T) -> _T:
+    return default if value is None else value
+
 
 def _parse_agent_id_from_session_key(key: str) -> str | None:
     match = re.match(r"^agent:([^:]+):", key or "")
@@ -46,10 +52,8 @@ def _list_active_sessions(
     run_cmd_fn: Callable[..., CmdResult] | None = None,
     parse_json_maybe_fn: Callable[[str], Any] | None = None,
 ) -> list[dict[str, Any]]:
-    if run_cmd_fn is None:
-        run_cmd_fn = run_cmd
-    if parse_json_maybe_fn is None:
-        parse_json_maybe_fn = _parse_json_maybe
+    run_cmd_fn = _resolve_default(run_cmd_fn, run_cmd)
+    parse_json_maybe_fn = _resolve_default(parse_json_maybe_fn, _parse_json_maybe)
     argv = [
         cfg.openclaw.command,
         "sessions",
@@ -79,8 +83,7 @@ def _backup_openclaw_state(
     *,
     write_attempt_file_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    if write_attempt_file_fn is None:
-        write_attempt_file_fn = _write_attempt_file
+    write_attempt_file_fn = _resolve_default(write_attempt_file_fn, _write_attempt_file)
     src = cfg.openclaw.state_dir
     if not src.exists():
         raise FileNotFoundError(f"openclaw state dir not found: {src}")
@@ -110,16 +113,11 @@ def _run_session_command_stage(
     write_attempt_file_fn: Callable[..., Any] | None = None,
     redact_text_fn: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
-    if list_active_sessions_fn is None:
-        list_active_sessions_fn = _list_active_sessions
-    if parse_agent_id_from_session_key_fn is None:
-        parse_agent_id_from_session_key_fn = _parse_agent_id_from_session_key
-    if run_cmd_fn is None:
-        run_cmd_fn = run_cmd
-    if write_attempt_file_fn is None:
-        write_attempt_file_fn = _write_attempt_file
-    if redact_text_fn is None:
-        redact_text_fn = redact_text
+    list_active_sessions_fn = _resolve_default(list_active_sessions_fn, _list_active_sessions)
+    parse_agent_id_from_session_key_fn = _resolve_default(parse_agent_id_from_session_key_fn, _parse_agent_id_from_session_key)
+    run_cmd_fn = _resolve_default(run_cmd_fn, run_cmd)
+    write_attempt_file_fn = _resolve_default(write_attempt_file_fn, _write_attempt_file)
+    redact_text_fn = _resolve_default(redact_text_fn, redact_text)
     repair_log = logging.getLogger("fix_my_claw.repair")
     results: list[dict[str, Any]] = []
     if not cfg.repair.session_control_enabled or not message_text.strip():
@@ -200,10 +198,8 @@ def _attempt_dir(
     ensure_dir_fn: Callable[[Path], Any] | None = None,
     cleanup_old_attempt_dirs_fn: Callable[[AppConfig], int] | None = None,
 ) -> Path:
-    if ensure_dir_fn is None:
-        ensure_dir_fn = ensure_dir
-    if cleanup_old_attempt_dirs_fn is None:
-        cleanup_old_attempt_dirs_fn = _cleanup_old_attempt_dirs
+    ensure_dir_fn = _resolve_default(ensure_dir_fn, ensure_dir)
+    cleanup_old_attempt_dirs_fn = _resolve_default(cleanup_old_attempt_dirs_fn, _cleanup_old_attempt_dirs)
     base = cfg.monitor.state_dir / "attempts"
     ensure_dir_fn(base)
     cleanup_old_attempt_dirs_fn(cfg)
@@ -225,12 +221,9 @@ def _evaluate_with_context(
     context_logs_timeout_seconds_fn: Callable[[AppConfig], int] | None = None,
     collect_context_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> tuple[HealthEvaluation, dict]:
-    if evaluate_health_fn is None:
-        evaluate_health_fn = _evaluate_health
-    if context_logs_timeout_seconds_fn is None:
-        context_logs_timeout_seconds_fn = _context_logs_timeout_seconds
-    if collect_context_fn is None:
-        collect_context_fn = _collect_context
+    evaluate_health_fn = _resolve_default(evaluate_health_fn, _evaluate_health)
+    context_logs_timeout_seconds_fn = _resolve_default(context_logs_timeout_seconds_fn, _context_logs_timeout_seconds)
+    collect_context_fn = _resolve_default(collect_context_fn, _collect_context)
     evaluation = evaluate_health_fn(
         cfg,
         log_probe_failures=log_probe_failures,
@@ -249,10 +242,8 @@ def _collect_context(
     write_attempt_file_fn: Callable[..., Any] | None = None,
     redact_text_fn: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
-    if write_attempt_file_fn is None:
-        write_attempt_file_fn = _write_attempt_file
-    if redact_text_fn is None:
-        redact_text_fn = redact_text
+    write_attempt_file_fn = _resolve_default(write_attempt_file_fn, _write_attempt_file)
+    redact_text_fn = _resolve_default(redact_text_fn, redact_text)
     logs = evaluation.logs_probe
     prefix = f"context.{stage_name}"
     health_stdout = f"{prefix}.health.stdout.txt"
@@ -301,12 +292,9 @@ def _evaluate_health(
     probe_logs_fn: Callable[..., CmdResult] | None = None,
     analyze_anomaly_guard_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> HealthEvaluation:
-    if probe_health_fn is None:
-        probe_health_fn = probe_health
-    if probe_status_fn is None:
-        probe_status_fn = probe_status
-    if probe_logs_fn is None:
-        probe_logs_fn = probe_logs
+    probe_health_fn = _resolve_default(probe_health_fn, probe_health)
+    probe_status_fn = _resolve_default(probe_status_fn, probe_status)
+    probe_logs_fn = _resolve_default(probe_logs_fn, probe_logs)
     if analyze_anomaly_guard_fn is None:
         from .anomaly_guard import _analyze_anomaly_guard
 
@@ -358,20 +346,13 @@ def _run_official_steps(
     context_logs_timeout_seconds_fn: Callable[[AppConfig], int] | None = None,
     sleep_fn: Callable[[float], Any] | None = None,
 ) -> tuple[list[dict], HealthEvaluation, str]:
-    if run_cmd_fn is None:
-        run_cmd_fn = run_cmd
-    if write_attempt_file_fn is None:
-        write_attempt_file_fn = _write_attempt_file
-    if redact_text_fn is None:
-        redact_text_fn = redact_text
-    if truncate_for_log_fn is None:
-        truncate_for_log_fn = truncate_for_log
-    if evaluate_health_fn is None:
-        evaluate_health_fn = _evaluate_health
-    if context_logs_timeout_seconds_fn is None:
-        context_logs_timeout_seconds_fn = _context_logs_timeout_seconds
-    if sleep_fn is None:
-        sleep_fn = time.sleep
+    run_cmd_fn = _resolve_default(run_cmd_fn, run_cmd)
+    write_attempt_file_fn = _resolve_default(write_attempt_file_fn, _write_attempt_file)
+    redact_text_fn = _resolve_default(redact_text_fn, redact_text)
+    truncate_for_log_fn = _resolve_default(truncate_for_log_fn, truncate_for_log)
+    evaluate_health_fn = _resolve_default(evaluate_health_fn, _evaluate_health)
+    context_logs_timeout_seconds_fn = _resolve_default(context_logs_timeout_seconds_fn, _context_logs_timeout_seconds)
+    sleep_fn = _resolve_default(sleep_fn, time.sleep)
     repair_log = logging.getLogger("fix_my_claw.repair")
     results: list[dict] = []
     last_evaluation: HealthEvaluation | None = None
@@ -461,18 +442,12 @@ def _run_ai_repair(
     redact_text_fn: Callable[[str], str] | None = None,
     truncate_for_log_fn: Callable[[str], str] | None = None,
 ) -> CmdResult:
-    if load_prompt_text_fn is None:
-        load_prompt_text_fn = _load_prompt_text
-    if build_ai_cmd_fn is None:
-        build_ai_cmd_fn = _build_ai_cmd
-    if run_cmd_fn is None:
-        run_cmd_fn = run_cmd
-    if write_attempt_file_fn is None:
-        write_attempt_file_fn = _write_attempt_file
-    if redact_text_fn is None:
-        redact_text_fn = redact_text
-    if truncate_for_log_fn is None:
-        truncate_for_log_fn = truncate_for_log
+    load_prompt_text_fn = _resolve_default(load_prompt_text_fn, _load_prompt_text)
+    build_ai_cmd_fn = _resolve_default(build_ai_cmd_fn, _build_ai_cmd)
+    run_cmd_fn = _resolve_default(run_cmd_fn, run_cmd)
+    write_attempt_file_fn = _resolve_default(write_attempt_file_fn, _write_attempt_file)
+    redact_text_fn = _resolve_default(redact_text_fn, redact_text)
+    truncate_for_log_fn = _resolve_default(truncate_for_log_fn, truncate_for_log)
     prompt_name = "repair_code.md" if code_stage else "repair.md"
     prompt = Template(load_prompt_text_fn(prompt_name)).safe_substitute(
         {
