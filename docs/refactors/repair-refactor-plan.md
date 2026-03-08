@@ -3,7 +3,7 @@
 ## 版本信息
 - 创建日期: 2026-03-08
 - 计划版本: v1.2
-- 当前状态: step4
+- 当前状态: step6
 - 目标周期: 10-14 天
 - 风险等级: 中高
 
@@ -198,7 +198,7 @@
 - 将类型定义移回 `repair.py`
 
 ### Step 5: 拆出 Repair 执行 Helper 层
-状态: pending
+状态: done
 前置依赖: Step 4
 目标: 将 operational helper 从 `repair.py` 抽离到单独模块。
 

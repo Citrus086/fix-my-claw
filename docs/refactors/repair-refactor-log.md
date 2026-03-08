@@ -18,7 +18,7 @@
 | 2 | GUI Schema Drift 修复 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 3 | 通知文本集中化 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 4 | 拆出 Repair 类型层 | done | Claude | 2026-03-08 | 2026-03-08 | passed |
-| 5 | 拆出 Repair 执行 Helper 层 | pending | - | - | - | - |
+| 5 | 拆出 Repair 执行 Helper 层 | done | Claude, Codex | 2026-03-08 | 2026-03-08 | passed |
 | 6 | 提取配置验证 Helper | pending | - | - | - | - |
 | 7 | 拆出 Stage 实现 | pending | - | - | - | - |
 | 8 | Repair.py 收敛为 Façade | pending | - | - | - | - |
@@ -393,31 +393,123 @@ repair.py re-export 列表:
 ---
 
 ### Step 5: 拆出 Repair 执行 Helper 层
-执行日期:
-执行人:
-状态:
+执行日期: 2026-03-08
+执行人: Claude
+状态: done
 
 修改文件:
-- 
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair_ops.py` (新建)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py` (更新 import，删除已迁移函数)
 
 执行内容:
-- [ ] 创建 `repair_ops.py`
-- [ ] 迁移 operational helper
-- [ ] `attempt_repair()` 继续保留在 `repair.py`
+- [x] 创建 `repair_ops.py`
+- [x] 迁移 operational helper 函数
+- [x] `attempt_repair()` 继续保留在 `repair.py`
+- [x] 在 `repair.py` 中 re-export 所有 helper 以保持向后兼容性
 
 命令记录:
 ```bash
-# pytest ...
+python -m pytest tests/test_messages.py tests/test_gui_cli_support.py -v --tb=short
+python -m pytest tests/test_anomaly_guard.py::TestRepairFlow::test_attempt_repair_exposes_typed_stage_pipeline -xvs --tb=short
+python -m pytest tests/test_anomaly_guard.py::TestRepairFlow::test_ai_code_stage_success -xvs --tb=short
+python -m pytest tests/test_anomaly_guard.py::TestRepairFlow::test_yes_runs_backup_then_ai -xvs --tb=short
 ```
 
 结果摘要:
 ```text
-# helper 拆分后的验证结果
+test_messages.py: 23 passed
+test_gui_cli_support.py: 9 passed
+关键 repair 测试: 3 passed
+  - test_attempt_repair_exposes_typed_stage_pipeline
+  - test_ai_code_stage_success
+  - test_yes_runs_backup_then_ai
+
+迁移的 helper 函数清单:
+1. _should_notify / _notify_send_with_level (保留在 repair.py 以保持测试兼容性)
+2. _parse_agent_id_from_session_key - 从 session key 提取 agent ID
+3. _list_active_sessions - 列出活跃会话
+4. _backup_openclaw_state - 备份 openclaw 状态
+5. _run_session_command_stage - 运行会话命令阶段
+6. _attempt_dir / _cleanup_old_attempt_dirs - 管理尝试目录
+7. _context_logs_timeout_seconds - 获取日志超时时间
+8. _evaluate_with_context / _collect_context / _evaluate_health - 健康评估和上下文收集
+9. _run_official_steps - 运行官方修复步骤
+10. _load_prompt_text / _build_ai_cmd / _run_ai_repair - AI 修复相关
+11. _session_stage_has_successful_commands - 检查会话阶段是否成功
+12. _should_try_soft_pause - 判断是否尝试软暂停
+13. _ai_decision_source_label / _ai_decision_notification_text - AI 决策相关
+
+repair.py re-export 列表 (向后兼容):
+- 所有类型 (AiDecision, RepairResult 等)
+- 所有 operational helper (_evaluate_health, _run_official_steps 等)
+- 依赖项 (probe_health, _notify_send, run_cmd, _analyze_anomaly_guard)
+- 通知级别常量 (NOTIFY_LEVEL_ALL, NOTIFY_LEVEL_IMPORTANT, NOTIFY_LEVEL_CRITICAL)
 ```
 
 问题记录:
+- 测试兼容性问题：_notify_send_with_level 和 _should_notify 需要保留在 repair.py 中，
+  因为测试代码直接 mock repair_module._notify_send，而这些函数在 repair_ops 中会调用 notify._notify_send
+- 解决方案：将这两个函数保留在 repair.py 中，其他 helper 迁移到 repair_ops.py
 
-是否可进入下一步:
+补充执行日期: 2026-03-08
+补充执行人: Codex
+补充状态: done
+
+补充修改文件:
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair_ops.py` (将 helper 实现改为可注入依赖，移除未实际迁移需要的通知 gating 逻辑)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py` (改为薄 façade wrapper，恢复 legacy helper re-export，并保持 repair 级 patch 点稳定)
+
+补充执行内容:
+- [x] 保留 `repair_ops.py` 作为 operational helper 的唯一实现落点
+- [x] 将 `repair.py` 收敛为最小兼容 façade，而不是继续堆叠完整 helper 副本
+- [x] 为 patch-sensitive helper 增加薄包装，确保 `monitor.py` 和既有测试仍可从 `repair.py` 观察到相同依赖替换面
+- [x] 恢复 `_cmd_result_to_json` / `_records_to_json` 的 re-export
+- [x] 验证 Step 5 修复后全量测试恢复为绿色
+
+补充命令记录:
+```bash
+python -m compileall src/fix_my_claw/repair.py src/fix_my_claw/repair_ops.py
+python -m pytest tests/test_anomaly_guard.py -q -k 'TestRepairFlow or test_run_check_marks_unhealthy_when_anomaly_triggered or test_evaluate_health_uses_anomaly_guard_logs_when_enabled or test_evaluate_health_marks_probe_failure_without_logs_when_disabled'
+python -m pytest tests/test_gui_cli_support.py -q
+python -m pytest tests/test_messages.py -q
+python -m pytest tests -q
+```
+
+补充结果摘要:
+```text
+Step 5 补充修复前的问题:
+- `repair.py` 直接 re-export `repair_ops` 中的 helper，导致 `repair_module` 上的 patch 不再影响 helper 内部依赖调用
+- `monitor.run_check()` 通过 `repair._evaluate_health()` 进入 `repair_ops` 后，`probe_health` / `probe_status` / `_analyze_anomaly_guard` 的测试替身失效
+- repair flow 中 `_evaluate_with_context()` / `_run_official_steps()` / `_run_ai_repair()` 同样绕过了 `repair.py` 级 patch 点
+- `_cmd_result_to_json` / `_records_to_json` 被列入 `repair.py.__all__`，但实际未 re-export
+
+本次修复策略:
+- `repair_ops.py` 保留真实实现
+- `repair.py` 仅保留少量薄 wrapper，把 `run_cmd`、`probe_health`、`_collect_context` 等依赖注入到 `repair_ops`
+- `_should_notify` / `_notify_send_with_level` 继续留在 `repair.py`，避免再次把通知 mock 面打散
+
+测试结果:
+- compileall: passed
+- targeted repair/anomaly regressions: 24 passed, 50 deselected
+- tests/test_gui_cli_support.py: 9 passed
+- tests/test_messages.py: 23 passed
+- tests/: 106 passed
+
+Step 5 完成态:
+- `repair.py` 已明显瘦身，主体保留 stage 组装和 `attempt_repair()`
+- `repair_ops.py` 承担 session、attempt dir、context、official repair、AI repair、backup 等 operational helper
+- 全量测试 `exit code 1` 问题已消失
+```
+
+补充问题记录:
+- 直接 alias 到 `repair_ops.py` 虽然代码更短，但会破坏 `repair.py` 作为兼容入口与测试 patch surface 的语义；这不是可接受的“瘦身”
+- 最终采用的 façade 只保留 patch-sensitive 包装，不把真实逻辑搬回 `repair.py`
+
+下一步建议:
+- Step 6 仅处理 `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/config_validation.py`、`/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/config.py` 和必要测试
+- 进入 Step 6 前，不要再回头扩展 `repair.py` 的兼容层；后续瘦身应留到 Step 8 的 façade 收敛阶段统一处理
+
+是否可进入下一步: 是，Step 5 Gate 已通过，可以开始 Step 6
 
 ---
 
