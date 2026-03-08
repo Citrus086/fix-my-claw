@@ -1,3 +1,14 @@
+"""Repair module facade.
+
+This module serves as the public entry point for repair functionality.
+All types, helpers, and stages are defined in separate modules:
+- repair_types.py: Result models and type helpers
+- repair_ops.py: Operational helper implementations
+- stages/: Individual stage implementations
+
+The module re-exports everything needed for backward compatibility.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -67,18 +78,6 @@ from .stages import (
     SessionTerminateStage,
 )
 from .state import StateStore, _now_ts
-
-"""
-Repair module façade.
-
-This module serves as the public entry point for repair functionality.
-All types, helpers, and stages are defined in separate modules:
-- repair_types.py: Result models and type helpers
-- repair_ops.py: Operational helper implementations
-- stages/: Individual stage implementations
-
-The module re-exports everything needed for backward compatibility.
-"""
 
 __all__ = [
     # Types

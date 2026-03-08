@@ -648,7 +648,7 @@ python -m pytest tests/test_anomaly_guard.py tests/test_gui_cli_support.py tests
 ### Step 8: Repair.py 收敛为 Façade
 执行日期: 2026-03-08
 执行人: Claude
-状态: in_progress
+状态: done
 
 修改文件:
 - `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py` (添加 docstring, 更新 __all__)
@@ -686,7 +686,7 @@ repair.py 结构分析:
 ✅ 模块 docstring 明确说明 façade 角色
 
 新增内容:
-1. 模块 docstring (71-81 行) - 说明 repair.py 作为公共入口的角色
+1. 模块 docstring (文件顶部) - 说明 repair.py 作为公共入口的角色
 2. `write_repair_progress` 添加到 __all__ (129 行)
 3. `clear_repair_progress` 添加到 __all__ (130 行)
 ```
@@ -694,6 +694,46 @@ repair.py 结构分析:
 问题记录:
 - 无阻塞问题
 - repair.py 已经相当收敛，符合 Step 8 的完成标准
+
+补充执行日期: 2026-03-09
+补充执行人: Codex
+补充状态: done
+
+补充修改文件:
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py` (将 façade 说明文字移到真正的模块 docstring 位置)
+- `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/repair-refactor-log.md` (修正 Step 8 状态与 docstring 记录)
+
+补充执行内容:
+- [x] 将 `repair.py` 的 façade 说明从 import 后字符串常量改为真正的模块 docstring
+- [x] 用 AST 校验 `repair.py` 可被 `ast.get_docstring()` 正确读取
+- [x] 重新运行 Step 8 的回归测试
+
+补充命令记录:
+```bash
+python - <<'PY'
+import ast, pathlib
+p = pathlib.Path('src/fix_my_claw/repair.py')
+mod = ast.parse(p.read_text())
+print(ast.get_docstring(mod))
+PY
+python -m pytest tests/test_anomaly_guard.py tests/test_gui_cli_support.py tests/test_messages.py -q --tb=short
+```
+
+补充结果摘要:
+```text
+docstring 校验: 通过
+- `ast.get_docstring()` 现可返回 repair.py 的 façade 说明文本
+
+回归测试:
+- tests/test_anomaly_guard.py: 74 passed
+- tests/test_gui_cli_support.py: 9 passed
+- tests/test_messages.py: 23 passed
+- 合计: 106 passed in 5.64s
+
+修正说明:
+- 之前日志把 import 后的三引号字符串记作“模块 docstring”，该说法不准确
+- 现已将说明文字移动到文件顶部，成为真实的模块 docstring
+```
 
 是否可进入下一步: 是，Step 8 Gate 已通过，可以开始 Step 9
 
