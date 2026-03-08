@@ -54,6 +54,7 @@ from .repair_types import (
     _require_stage_payload,
 )
 from .runtime import CmdResult, run_cmd
+from .repair_state_machine import RepairStateMachine, RepairStateMachineHooks
 from .shared import (
     _parse_json_maybe,
     _write_attempt_file,
@@ -309,6 +310,45 @@ def _result_from_outcome(*, attempted: bool, outcome: RepairOutcome) -> RepairRe
     )
 
 
+def _build_repair_state_machine_hooks() -> RepairStateMachineHooks:
+    return RepairStateMachineHooks(
+        attempt_dir_fn=_attempt_dir,
+        clear_repair_progress_fn=clear_repair_progress,
+        collect_context_fn=_collect_context,
+        context_logs_timeout_seconds_fn=_context_logs_timeout_seconds,
+        evaluate_health_fn=_evaluate_health,
+        notify_send_with_level_fn=_notify_send_with_level,
+        now_ts_fn=_now_ts,
+        require_stage_payload_fn=_require_stage_payload,
+        result_from_outcome_fn=_result_from_outcome,
+        session_stage_has_successful_commands_fn=_session_stage_has_successful_commands,
+        should_try_soft_pause_fn=_should_try_soft_pause,
+        write_repair_progress_fn=write_repair_progress,
+        repair_starting_message=REPAIR_STARTING,
+        recovered_after_pause_message=REPAIR_RECOVERED_AFTER_PAUSE,
+        recovered_by_official_message=REPAIR_RECOVERED_BY_OFFICIAL,
+        ai_disabled_message=REPAIR_AI_DISABLED,
+        ai_rate_limited_message=REPAIR_AI_RATE_LIMITED,
+        no_yes_received_message=REPAIR_NO_YES_RECEIVED,
+        ai_config_success_message=REPAIR_AI_CONFIG_SUCCESS,
+        ai_code_success_message=REPAIR_AI_CODE_SUCCESS,
+        final_still_unhealthy_message=REPAIR_FINAL_STILL_UNHEALTHY,
+        repair_backup_failed_fn=repair_backup_failed,
+        notify_level_all=NOTIFY_LEVEL_ALL,
+        notify_level_important=NOTIFY_LEVEL_IMPORTANT,
+        notify_level_critical=NOTIFY_LEVEL_CRITICAL,
+        session_pause_stage_cls=SessionPauseStage,
+        pause_assessment_stage_cls=PauseAssessmentStage,
+        session_terminate_stage_cls=SessionTerminateStage,
+        session_reset_stage_cls=SessionResetStage,
+        official_repair_stage_cls=OfficialRepairStage,
+        ai_decision_stage_cls=AiDecisionStage,
+        backup_stage_cls=BackupStage,
+        ai_repair_stage_cls=AiRepairStage,
+        final_assessment_stage_cls=FinalAssessmentStage,
+    )
+
+
 def attempt_repair(
     cfg: AppConfig,
     store: StateStore,
@@ -316,194 +356,10 @@ def attempt_repair(
     force: bool,
     reason: str | None = None,
 ) -> RepairResult:
-    repair_log = logging.getLogger("fix_my_claw.repair")
-    initial_evaluation = _evaluate_health(
-        cfg,
-        log_probe_failures=False,
-        capture_logs=True,
-        logs_timeout_seconds=_context_logs_timeout_seconds(cfg),
-    )
-    if initial_evaluation.effective_healthy:
-        repair_log.info("repair skipped: already healthy")
-        clear_repair_progress(cfg.monitor.state_dir)
-        return RepairResult(attempted=False, fixed=True, used_ai=False, details_data={"already_healthy": True})
-
-    if not cfg.repair.enabled:
-        repair_log.warning("repair skipped: disabled by config")
-        clear_repair_progress(cfg.monitor.state_dir)
-        return RepairResult(attempted=False, fixed=False, used_ai=False, details_data={"repair_disabled": True})
-
-    if not store.can_attempt_repair(cfg.monitor.repair_cooldown_seconds, force=force):
-        details: dict[str, object] = {"cooldown": True}
-        state = store.load()
-        if state.last_repair_ts is not None:
-            elapsed = _now_ts() - state.last_repair_ts
-            remaining = max(0, cfg.monitor.repair_cooldown_seconds - elapsed)
-            details["cooldown_remaining_seconds"] = remaining
-            repair_log.info("repair skipped: cooldown (%ss remaining)", remaining)
-        else:
-            repair_log.info("repair skipped: cooldown")
-        clear_repair_progress(cfg.monitor.state_dir)
-        return RepairResult(attempted=False, fixed=False, used_ai=False, details_data=details)
-
-    attempt_dir = _attempt_dir(cfg)
-    store.mark_repair_attempt()
-    ctx = RepairPipelineContext(cfg=cfg, store=store, attempt_dir=attempt_dir)
-    outcome = RepairOutcome(attempt_dir=str(attempt_dir.resolve()), reason=reason)
-    repair_log.info("starting repair attempt: dir=%s", attempt_dir.resolve())
-
-    # 写入初始进度
-    write_repair_progress(
-        cfg.monitor.state_dir,
-        stage="starting",
-        status="running",
-        attempt_dir=str(attempt_dir.resolve()),
-    )
-    outcome.start_notification = _notify_send_with_level(
-        cfg,
-        REPAIR_STARTING,
-        NOTIFY_LEVEL_IMPORTANT,
-        silent=False,
-    )
-
-    outcome.before_context = _collect_context(initial_evaluation, attempt_dir, stage_name="before")
-    if _should_try_soft_pause(cfg, initial_evaluation):
-        pause_candidate = SessionPauseStage().run(ctx)
-        pause_payload = _require_stage_payload(pause_candidate, SessionStageData)
-        if pause_payload.commands:
-            pause_stage = outcome.add_stage(pause_candidate)
-            if _session_stage_has_successful_commands(pause_stage):
-                pause_check_stage = outcome.add_stage(PauseAssessmentStage().run(ctx, previous_stage=pause_stage))
-                if pause_check_stage.fixed:
-                    outcome.final_stage = pause_check_stage
-                    outcome.final_notification = _notify_send_with_level(
-                        cfg,
-                        REPAIR_RECOVERED_AFTER_PAUSE,
-                        NOTIFY_LEVEL_IMPORTANT,
-                    )
-                    repair_log.info("recovered after soft pause: dir=%s", attempt_dir.resolve())
-                    clear_repair_progress(cfg.monitor.state_dir)
-                    return _result_from_outcome(attempted=True, outcome=outcome)
-    terminate_stage = outcome.add_stage(SessionTerminateStage().run(ctx))
-    outcome.add_stage(SessionResetStage().run(ctx, previous_stage=terminate_stage))
-    official_stage = outcome.add_stage(OfficialRepairStage().run(ctx))
-
-    if official_stage.fixed:
-        outcome.final_stage = official_stage
-        outcome.final_notification = _notify_send_with_level(
-            cfg,
-            REPAIR_RECOVERED_BY_OFFICIAL,
-            NOTIFY_LEVEL_IMPORTANT,
-        )
-        repair_log.info("recovered by official steps: dir=%s", attempt_dir.resolve())
-        clear_repair_progress(cfg.monitor.state_dir)
-        return _result_from_outcome(attempted=True, outcome=outcome)
-
-    if not cfg.ai.enabled:
-        repair_log.info("Codex-assisted remediation disabled; leaving OpenClaw unhealthy")
-        final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_no_ai").run(ctx))
-        outcome.final_stage = final_stage
-        outcome.final_notification = _notify_send_with_level(
-            cfg,
-            REPAIR_AI_DISABLED,
-            NOTIFY_LEVEL_IMPORTANT,
-            silent=False,
-        )
-        clear_repair_progress(cfg.monitor.state_dir)
-        return _result_from_outcome(attempted=True, outcome=outcome)
-
-    if not store.can_attempt_ai(
-        max_attempts_per_day=cfg.ai.max_attempts_per_day,
-        cooldown_seconds=cfg.ai.cooldown_seconds,
-    ):
-        # 直接创建限流决策，不运行 stage（避免触发 GUI 标志检查）
-        outcome.add_stage(StageResult(
-            name="ai_decision",
-            status="completed",
-            payload=AiDecision.from_mapping({"asked": False, "decision": "rate_limited"}),
-        ))
-        final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_rate_limited").run(ctx))
-        outcome.final_stage = final_stage
-        outcome.final_notification = _notify_send_with_level(
-            cfg,
-            REPAIR_AI_RATE_LIMITED,
-            NOTIFY_LEVEL_ALL,
-            silent=False,
-        )
-        clear_repair_progress(cfg.monitor.state_dir)
-        return _result_from_outcome(attempted=True, outcome=outcome)
-
-    ai_decision_stage = outcome.add_stage(AiDecisionStage().run(ctx))
-    ai_decision = _require_stage_payload(ai_decision_stage, AiDecision)
-    if ai_decision.decision != "yes":
-        final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_no_approval").run(ctx))
-        outcome.final_stage = final_stage
-        if ai_decision_stage.notification is not None:
-            outcome.final_notification = ai_decision_stage.notification
-        else:
-            outcome.final_notification = _notify_send_with_level(
-                cfg,
-                REPAIR_NO_YES_RECEIVED,
-                NOTIFY_LEVEL_IMPORTANT,
-                silent=False,
-            )
-        clear_repair_progress(cfg.monitor.state_dir)
-        return _result_from_outcome(attempted=True, outcome=outcome)
-
-    backup_stage = outcome.add_stage(BackupStage().run(ctx))
-    backup_artifact = _require_stage_payload(backup_stage, BackupArtifact)
-    if backup_stage.status != "completed":
-        outcome.final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final_backup_error").run(ctx))
-        outcome.final_notification = _notify_send_with_level(
-            cfg,
-            repair_backup_failed(backup_artifact.error),
-            NOTIFY_LEVEL_IMPORTANT,
-            silent=False,
-        )
-        clear_repair_progress(cfg.monitor.state_dir)
-        return _result_from_outcome(attempted=True, outcome=outcome)
-
-    store.mark_ai_attempt()
-    ai_config_stage = outcome.add_stage(AiRepairStage(code_stage=False).run(ctx))
-    if ai_config_stage.fixed:
-        outcome.final_stage = ai_config_stage
-        outcome.final_notification = _notify_send_with_level(
-            cfg,
-            REPAIR_AI_CONFIG_SUCCESS,
-            NOTIFY_LEVEL_IMPORTANT,
-            silent=False,
-        )
-        repair_log.info("recovered by Codex-assisted remediation: dir=%s", attempt_dir.resolve())
-        clear_repair_progress(cfg.monitor.state_dir)
-        return _result_from_outcome(attempted=True, outcome=outcome)
-
-    if cfg.ai.allow_code_changes:
-        ai_code_stage = outcome.add_stage(AiRepairStage(code_stage=True).run(ctx))
-        if ai_code_stage.fixed:
-            outcome.final_stage = ai_code_stage
-            outcome.final_notification = _notify_send_with_level(
-                cfg,
-                REPAIR_AI_CODE_SUCCESS,
-                NOTIFY_LEVEL_IMPORTANT,
-                silent=False,
-            )
-            repair_log.info("recovered by code-stage remediation: dir=%s", attempt_dir.resolve())
-            clear_repair_progress(cfg.monitor.state_dir)
-            return _result_from_outcome(attempted=True, outcome=outcome)
-
-    final_stage = outcome.add_stage(FinalAssessmentStage(stage_name="final").run(ctx))
-    outcome.final_stage = final_stage
-    outcome.final_notification = _notify_send_with_level(
-        cfg,
-        REPAIR_FINAL_STILL_UNHEALTHY,
-        NOTIFY_LEVEL_CRITICAL,
-        silent=False,
-    )
-    repair_log.warning(
-        "repair attempt finished: fixed=%s used_codex=%s dir=%s",
-        outcome.fixed,
-        outcome.used_ai,
-        attempt_dir.resolve(),
-    )
-    clear_repair_progress(cfg.monitor.state_dir)
-    return _result_from_outcome(attempted=True, outcome=outcome)
+    return RepairStateMachine(
+        cfg=cfg,
+        store=store,
+        force=force,
+        reason=reason,
+        hooks=_build_repair_state_machine_hooks(),
+    ).run()

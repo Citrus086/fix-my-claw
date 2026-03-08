@@ -22,7 +22,7 @@
 | 6 | 提取配置验证 Helper | done | Claude | 2026-03-08 | 2026-03-08 | passed |
 | 7 | 拆出 Stage 实现 | done | Claude, Codex | 2026-03-08 | 2026-03-08 | passed |
 | 8 | Repair.py 收敛为 Façade | done | Claude | 2026-03-08 | 2026-03-08 | passed |
-| 9 | 引入状态机 | pending | - | - | - | - |
+| 9 | 引入状态机 | done | Codex | 2026-03-09 | 2026-03-09 | passed |
 | 10 | 最终兼容性收尾 | pending | - | - | - | - |
 
 状态约定:
@@ -740,31 +740,74 @@ docstring 校验: 通过
 ---
 
 ### Step 9: 引入状态机
-执行日期:
-执行人:
-状态:
+执行日期: 2026-03-09
+执行人: Codex
+状态: done
 
 修改文件:
-- 
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair_state_machine.py` (新建显式状态机，承接 repair orchestration)
+- `/Users/mima0000/.openclaw/fix-my-claw/src/fix_my_claw/repair.py` (将 `attempt_repair()` 收敛为状态机入口，并按调用时注入 hooks)
+- `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/repair-refactor-log.md` (登记 Step 9 执行记录)
+- `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/repair-refactor-plan.md` (同步 Step 9 / 当前状态)
 
 执行内容:
-- [ ] 创建 `repair_state_machine.py`
-- [ ] 将 orchestration 切换到状态机
-- [ ] 核对 synthetic stage 与时序兼容点
+- [x] 创建 `repair_state_machine.py`
+- [x] 将 `attempt_repair()` 的控制流迁移到显式状态机
+- [x] 保留 stage 行为不变，仅迁移 orchestration
+- [x] 保持 `repair.py` 作为 patch-sensitive 依赖注入入口
+- [x] 核对 synthetic `ai_decision` stage 与调用时序兼容点
+- [x] 运行关键分支与回归测试
 
 命令记录:
 ```bash
-# pytest ...
+python -m compileall src/fix_my_claw/repair.py src/fix_my_claw/repair_state_machine.py -q
+python -m pytest tests/test_anomaly_guard.py::TestRepairFlow::test_attempt_repair_exposes_typed_stage_pipeline tests/test_anomaly_guard.py::TestRepairFlow::test_ai_code_stage_success tests/test_anomaly_guard.py::TestRepairFlow::test_attempt_repair_recovers_after_soft_pause_before_hard_reset tests/test_anomaly_guard.py::TestRepairFlow::test_yes_runs_backup_then_ai -q --tb=short
+python -m pytest tests/test_anomaly_guard.py -q -k 'test_run_check_marks_unhealthy_when_anomaly_triggered or test_evaluate_health_uses_anomaly_guard_logs_when_enabled or test_evaluate_health_marks_probe_failure_without_logs_when_disabled'
+python -m pytest tests/test_anomaly_guard.py tests/test_gui_cli_support.py tests/test_messages.py -q --tb=short
+python -m pytest tests -q
 ```
 
 结果摘要:
 ```text
-# 状态机迁移结果
+编译检查: 通过
+
+关键 repair flow:
+- test_attempt_repair_exposes_typed_stage_pipeline: passed
+- test_ai_code_stage_success: passed
+- test_attempt_repair_recovers_after_soft_pause_before_hard_reset: passed
+- test_yes_runs_backup_then_ai: passed
+
+patch-sensitive 回归:
+- test_run_check_marks_unhealthy_when_anomaly_triggered: passed
+
+Step 9 回归:
+- tests/test_anomaly_guard.py: 74 passed
+- tests/test_gui_cli_support.py: 9 passed
+- tests/test_messages.py: 23 passed
+- 合计: 106 passed in 5.35s
+
+全量 tests/:
+- 106 passed in 5.15s
+
+状态机迁移结果:
+1. 新建 `repair_state_machine.py`，用显式状态枚举承接 repair orchestration
+2. `repair.py::attempt_repair()` 现只负责构造 `RepairStateMachineHooks` 并调用状态机
+3. `mark_repair_attempt()`、`mark_ai_attempt()`、`clear_repair_progress()` 调用时机保持不变
+4. synthetic `ai_decision` stage 在 AI rate limit 分支继续保留
+5. 纯判断状态不写入 `outcome.stages`，只有执行型状态写入 stage
+6. patch-sensitive helper/stage 依赖仍由 `repair.py` 在调用时注入，因此既有 `repair_module` patch 面保持稳定
 ```
 
 问题记录:
+- 无阻塞问题
+- `repair_state_machine.py` 原有草稿不可编译，已整体替换为新的实现
+- `git status` 结束时仍会显示 `repair_state_machine.py` 为新文件，属本步骤正常新增
 
-是否可进入下一步:
+下一步建议:
+- 可以进入 Step 10
+- Step 10 重点应放在 CLI JSON、`repair_progress.json`、`attempts/` 目录和文档最终同步，不再改 orchestration 结构
+
+是否可进入下一步: 是，Step 9 Gate 已通过，可以开始 Step 10
 
 ---
 
@@ -802,7 +845,7 @@ docstring 校验: 通过
 
 | 日期 | Step | 问题描述 | 状态 | 负责人 | 解决方案 |
 |------|------|----------|------|--------|----------|
-| 2026-03-08 | 7 | Step 7 本地已有未登记改动，且 `tests/test_anomaly_guard.py::TestRepairFlow::test_ai_code_stage_success` 仍会卡住；`AiDecisionStage` 直接绕开 `repair.py` 的 `_ask_user_enable_ai` 兼容入口 | blocked | Codex | 先将 Step 7 正式置为 in_progress，再仅在允许文件内修复 `_ask_user_enable_ai` 的 patch-surface 兼容性 |
+| 2026-03-08 | 7 | Step 7 本地已有未登记改动，且 `tests/test_anomaly_guard.py::TestRepairFlow::test_ai_code_stage_success` 仍会卡住；`AiDecisionStage` 直接绕开 `repair.py` 的 `_ask_user_enable_ai` 兼容入口 | resolved | Codex | 已在 Step 7 中通过 `repair.py` façade 注入修复 |
 
 ## 变更建议记录
 
