@@ -12,6 +12,11 @@ let package = Package(
         .executableTarget(
             name: "FixMyClawGUI",
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "FixMyClawGUITests",
+            dependencies: ["FixMyClawGUI"],
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         )
     ]
 )

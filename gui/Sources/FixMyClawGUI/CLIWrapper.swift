@@ -340,7 +340,7 @@ struct RepairDetails: Codable {
 
 struct RepairAiDecision: Codable {
     let asked: Bool?
-    let decision: String
+    let decision: String?  // 改为可选，增强 decode 韧性
     let source: String?
     let error: String?
     let invalidReplies: Int?

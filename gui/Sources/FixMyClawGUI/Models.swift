@@ -140,6 +140,18 @@ struct AppConfig: Codable {
         case ai
         case agentRoles = "agent_roles"
     }
+
+    // 自定义解码器，增强对缺失 section 的韧性
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        monitor = try container.decodeIfPresent(MonitorConfig.self, forKey: .monitor) ?? MonitorConfig()
+        openclaw = try container.decodeIfPresent(OpenClawConfig.self, forKey: .openclaw) ?? OpenClawConfig()
+        repair = try container.decodeIfPresent(RepairConfig.self, forKey: .repair) ?? RepairConfig()
+        anomalyGuard = try container.decodeIfPresent(AnomalyGuardConfig.self, forKey: .anomalyGuard) ?? AnomalyGuardConfig()
+        notify = try container.decodeIfPresent(NotifyConfig.self, forKey: .notify) ?? NotifyConfig()
+        ai = try container.decodeIfPresent(AiConfig.self, forKey: .ai) ?? AiConfig()
+        agentRoles = try container.decodeIfPresent(AgentRolesConfig.self, forKey: .agentRoles) ?? AgentRolesConfig()
+    }
 }
 
 struct AgentRolesConfig: Codable {
@@ -199,9 +211,16 @@ struct RepairConfig: Codable {
     var enabled: Bool = true
     var sessionControlEnabled: Bool = true
     var sessionActiveMinutes: Int = 30
-    var sessionAgents: [String] = ["macs-orchestrator", "macs-builder", "macs-architect", "macs-research"]
+    // 与 Python DEFAULT_AGENT_ROLES 保持一致，包含短名称和长名称
+    var sessionAgents: [String] = [
+        "orchestrator", "macs-orchestrator",
+        "builder", "macs-builder",
+        "architect", "macs-architect",
+        "research", "macs-research"
+    ]
     var softPauseEnabled: Bool = true
-    var pauseMessage: String = ""
+    // 与 Python DEFAULT_PAUSE_MESSAGE 保持一致
+    var pauseMessage: String = "[CONTROL]\nAction: PAUSE\nReason: fix-my-claw detected an unhealthy state and is preserving the current task before stronger recovery.\nExpectation: ACK once, then stay paused until further instruction.\n"
     var pauseWaitSeconds: Int = 20
     var terminateMessage: String = "/stop"
     var newMessage: String = "/new"
@@ -233,8 +252,15 @@ struct AnomalyGuardConfig: Codable {
     var enabled: Bool = true
     var windowLines: Int = 200
     var probeTimeoutSeconds: Int = 30
-    var keywordsStop: [String] = []
-    var keywordsRepeat: [String] = []
+    // 与 Python AnomalyGuardConfig 默认值保持一致
+    var keywordsStop: [String] = [
+        "stop", "halt", "abort", "cancel", "terminate",
+        "停止", "立刻停止", "强制停止", "终止", "停止指令"
+    ]
+    var keywordsRepeat: [String] = [
+        "repeat", "repeating", "loop", "ping-pong",
+        "重复", "死循环", "不断", "一直在重复", "重复汇报"
+    ]
     var maxRepeatSameSignature: Int = 3
     var minCycleRepeatedTurns: Int = 4
     var maxCyclePeriod: Int = 4
@@ -245,9 +271,15 @@ struct AnomalyGuardConfig: Codable {
     var minSignatureChars: Int = 16
     var autoDispatchCheck: Bool = true
     var dispatchWindowLines: Int = 20
-    var keywordsDispatch: [String] = []
+    var keywordsDispatch: [String] = [
+        "dispatch", "handoff", "delegate", "assign",
+        "开始实施", "开始执行", "派给", "转交"
+    ]
     var minPostDispatchUnexpectedTurns: Int = 2
-    var keywordsArchitectActive: [String] = []
+    var keywordsArchitectActive: [String] = [
+        "architect", "still output", "continue output",
+        "还在输出", "继续发内容", "连续输出"
+    ]
     var similarityEnabled: Bool = true
     var similarityThreshold: Double = 0.82
     var similarityMinChars: Int = 12
@@ -319,13 +351,29 @@ struct AiConfig: Codable {
     var enabled: Bool = false
     var provider: String = "codex"
     var command: String = "codex"
-    var args: [String] = []
+    // 与 Python AiConfig 默认值保持一致
+    var args: [String] = [
+        "exec",
+        "-s", "workspace-write",
+        "-c", "approval_policy=\"never\"",
+        "--skip-git-repo-check",
+        "-C", "$workspace_dir",
+        "--add-dir", "$openclaw_state_dir",
+        "--add-dir", "$monitor_state_dir",
+    ]
     var model: String?
     var timeoutSeconds: Int = 1800
     var maxAttemptsPerDay: Int = 2
     var cooldownSeconds: Int = 3600
     var allowCodeChanges: Bool = false
-    var argsCode: [String] = []
+    // 与 Python AiConfig 默认值保持一致
+    var argsCode: [String] = [
+        "exec",
+        "-s", "danger-full-access",
+        "-c", "approval_policy=\"never\"",
+        "--skip-git-repo-check",
+        "-C", "$workspace_dir",
+    ]
 
     enum CodingKeys: String, CodingKey {
         case enabled

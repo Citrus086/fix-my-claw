@@ -71,6 +71,7 @@ class MenuBarManager: ObservableObject {
 
     /// 是否已经执行过首次健康检查
     private var hasPerformedInitialCheck = false
+    private var configPath: String { ConfigManager.shared.defaultConfigPath }
 
     /// 计算有效的显示状态（综合考虑修复中/审批中/健康态）
     var effectiveState: ServiceState {
@@ -106,11 +107,13 @@ class MenuBarManager: ObservableObject {
     }
 
     func start() {
+        startPolling()
         Task {
+            await pollRepairProgress()
+            await pollApprovalRequest()
             await initialSetup()
             // 启动时主动做一次真实健康检查，而不是乐观假设
             await performInitialHealthCheck()
-            startPolling()
         }
     }
 
@@ -146,20 +149,17 @@ class MenuBarManager: ObservableObject {
             return
         }
 
-        if !ConfigManager.shared.configExists {
-            do {
-                _ = try await cli.initializeConfig()
-                _ = try? await cli.disableMonitoring()
-                ConfigManager.shared.loadConfig()
-            } catch {
-                lastError = "初始化配置失败: \(error.localizedDescription)"
-            }
-        } else {
+        if ConfigManager.shared.configExists {
             ConfigManager.shared.loadConfig()
         }
 
         await refreshServiceStatus()
         await syncPersistedRepairResult(notifyIfNew: false)
+        if !ConfigManager.shared.configExists {
+            state = .noConfig
+            return
+        }
+
         if !hasShownWelcome, serviceStatus?.installed == false {
             hasShownWelcome = true
             showWelcomeDialog()
@@ -168,7 +168,7 @@ class MenuBarManager: ObservableObject {
 
     private func refreshHealthSnapshot(notifyOnChange: Bool) async throws {
         let previousHealthy = lastCheckResult?.healthy
-        let result = try await cli.check()
+        let result = try await cli.check(configPath: configPath)
         lastCheckResult = result
         lastCheckTime = Date()
         hasPerformedInitialCheck = true
@@ -201,9 +201,9 @@ class MenuBarManager: ObservableObject {
 
             do {
                 if state.isMonitoringEnabled {
-                    _ = try await cli.disableMonitoring()
+                    _ = try await cli.disableMonitoring(configPath: configPath)
                 } else {
-                    _ = try await cli.enableMonitoring()
+                    _ = try await cli.enableMonitoring(configPath: configPath)
                 }
                 await refreshStatus()
             } catch {
@@ -238,13 +238,7 @@ class MenuBarManager: ObservableObject {
             isLoading = true
             currentRepairStage = "starting"
 
-            // 发送启动通知（非阻塞）
-            let content = UNMutableNotificationContent()
-            content.title = "🔧 修复已启动"
-            content.body = "修复正在后台运行，请稍候..."
-            content.sound = .default
-            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-            try? await UNUserNotificationCenter.current().add(request)
+            await postLocalNotification(title: "🔧 修复已启动", body: "修复正在后台运行，请稍候...")
 
             var serviceWasRunning = false
             do {
@@ -253,7 +247,7 @@ class MenuBarManager: ObservableObject {
                     try await cli.stopService()
                 }
 
-                let result = try await cli.repair(force: force)
+                let result = try await cli.repair(force: force, configPath: configPath)
 
                 if serviceWasRunning {
                     try? await cli.startService()
@@ -268,13 +262,7 @@ class MenuBarManager: ObservableObject {
                     try? await cli.startService()
                 }
                 await refreshStatus()
-                // 发送失败通知
-                let errorContent = UNMutableNotificationContent()
-                errorContent.title = "❌ 修复失败"
-                errorContent.body = error.localizedDescription
-                errorContent.sound = .default
-                let errorRequest = UNNotificationRequest(identifier: UUID().uuidString, content: errorContent, trigger: nil)
-                try? await UNUserNotificationCenter.current().add(errorRequest)
+                await postLocalNotification(title: "❌ 修复失败", body: error.localizedDescription)
             }
 
             // 修复完成后清除状态
@@ -293,6 +281,26 @@ class MenuBarManager: ObservableObject {
                 await refreshStatus()
             } catch {
                 lastError = "安装服务失败: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func createDefaultConfig() {
+        guard !isLoading else { return }
+
+        Task {
+            isLoading = true
+            defer { isLoading = false }
+
+            do {
+                _ = try await cli.initializeConfig(at: configPath, force: true)
+                _ = try? await cli.disableMonitoring(configPath: configPath)
+                ConfigManager.shared.loadConfig()
+                await refreshStatus()
+                await syncPersistedRepairResult(notifyIfNew: false)
+                lastError = nil
+            } catch {
+                lastError = "创建默认配置失败: \(error.localizedDescription)"
             }
         }
     }
@@ -469,18 +477,9 @@ class MenuBarManager: ObservableObject {
     }
 
     private func sendStateChangeNotification(healthy: Bool, reason: String?) {
-        let content = UNMutableNotificationContent()
-        if healthy {
-            content.title = "🟢 OpenClaw 已恢复"
-            content.body = "系统状态恢复正常"
-        } else {
-            content.title = "🔴 OpenClaw 异常"
-            content.body = reason ?? "检测到异常状态"
-        }
-        content.sound = .default
-
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        let title = healthy ? "🟢 OpenClaw 已恢复" : "🔴 OpenClaw 异常"
+        let body = healthy ? "系统状态恢复正常" : (reason ?? "检测到异常状态")
+        Task { await postLocalNotification(title: title, body: body) }
     }
 
     private func handleRepairResult(_ result: RepairResult, source: RepairResultSource, notifyIfNew: Bool) async {
@@ -498,13 +497,7 @@ class MenuBarManager: ObservableObject {
     }
 
     private func deliverRepairNotification(_ presentation: RepairPresentation) async {
-        let content = UNMutableNotificationContent()
-        content.title = presentation.title
-        content.body = presentation.body
-        content.sound = .default
-
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        try? await UNUserNotificationCenter.current().add(request)
+        await postLocalNotification(title: presentation.title, body: presentation.body)
     }
 
     private func loadRepairResult() -> PersistedRepairResult? {
@@ -670,7 +663,35 @@ class MenuBarManager: ObservableObject {
         if let configured = ConfigManager.shared.config?.monitor.stateDir, !configured.isEmpty {
             return URL(fileURLWithPath: (configured as NSString).expandingTildeInPath)
         }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".fix-my-claw")
+        return ConfigManager.shared.defaultStateDirectoryURL
+    }
+
+    nonisolated static func canPostLocalNotifications(
+        bundlePath: String = Bundle.main.bundlePath,
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier
+    ) -> Bool {
+        guard !bundlePath.isEmpty, bundlePath.hasSuffix(".app") else {
+            return false
+        }
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else {
+            return false
+        }
+        return true
+    }
+
+    private func postLocalNotification(title: String, body: String) async {
+        guard Self.canPostLocalNotifications() else {
+            print("[GUI] skip local notification outside app bundle: \(title)")
+            return
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
     }
 
     private func loadApprovalRequest() -> ApprovalRequest? {
@@ -878,7 +899,7 @@ extension MenuBarManager {
             pauseItem.target = NSApplication.shared.delegate as? MenuBarController
             menu.addItem(pauseItem)
 
-        case .pausedHealthy, .pausedUnhealthy, .noConfig:
+        case .pausedHealthy, .pausedUnhealthy:
             let startItem = NSMenuItem(
                 title: "▶️ 启用自动修复",
                 action: #selector(MenuBarController.toggleMonitoring),
@@ -886,6 +907,15 @@ extension MenuBarManager {
             )
             startItem.target = NSApplication.shared.delegate as? MenuBarController
             menu.addItem(startItem)
+
+        case .noConfig:
+            let createConfigItem = NSMenuItem(
+                title: "⚙️ 创建默认配置",
+                action: #selector(MenuBarController.createDefaultConfig),
+                keyEquivalent: ""
+            )
+            createConfigItem.target = NSApplication.shared.delegate as? MenuBarController
+            menu.addItem(createConfigItem)
 
         case .unknown, .checking:
             let loadingItem = NSMenuItem(title: "⏳ 获取中...", action: nil, keyEquivalent: "")

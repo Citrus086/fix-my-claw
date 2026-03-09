@@ -10,8 +10,10 @@ private struct RawConfigSnapshot {
 @MainActor
 class ConfigManager: ObservableObject {
     static let shared = ConfigManager()
+    nonisolated static let configPathOverrideEnvironmentKey = "FIX_MY_CLAW_GUI_CONFIG_PATH"
 
     let defaultConfigPath: String
+    let defaultStateDirectoryURL: URL
     let cli = CLIWrapper()
 
     @Published var config: AppConfig?
@@ -22,9 +24,8 @@ class ConfigManager: ObservableObject {
     private var rawConfigPayload: [String: Any] = [:]
 
     init() {
-        defaultConfigPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".fix-my-claw/config.toml")
-            .path
+        defaultConfigPath = Self.resolveDefaultConfigPath()
+        defaultStateDirectoryURL = URL(fileURLWithPath: defaultConfigPath).deletingLastPathComponent()
     }
 
     var configExists: Bool {
@@ -184,5 +185,26 @@ class ConfigManager: ObservableObject {
             }
         }
         return merged
+    }
+
+    nonisolated static func resolveDefaultConfigPath(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> String {
+        if let override = environment[configPathOverrideEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            return normalizePath(override)
+        }
+
+        let homePath = normalizePath(homeDirectoryPath)
+        return URL(fileURLWithPath: homePath, isDirectory: true)
+            .appendingPathComponent(".fix-my-claw", isDirectory: true)
+            .appendingPathComponent("config.toml", isDirectory: false)
+            .path
+    }
+
+    nonisolated private static func normalizePath(_ path: String) -> String {
+        URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
     }
 }

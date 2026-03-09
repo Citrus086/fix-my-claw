@@ -80,6 +80,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         manager.installService()
     }
 
+    @objc func createDefaultConfig() {
+        manager.createDefaultConfig()
+    }
+
     @objc func uninstallService() {
         let alert = NSAlert()
         alert.messageText = "确认卸载"

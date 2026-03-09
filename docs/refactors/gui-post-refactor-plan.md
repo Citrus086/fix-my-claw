@@ -3,7 +3,7 @@
 ## 版本信息
 - 创建日期: 2026-03-09
 - 计划版本: v1.3.x
-- 当前状态: pending
+- 当前状态: in_progress
 - 目标周期: 3-5 天
 - 风险等级: 中
 
@@ -68,6 +68,8 @@
 4. 默认值与解码韧性收敛
 5. GUI/CLI 合同测试补强
 6. 验证与文档收尾
+7. Step 6 blocked 真实交互路径 unblock
+8. Step 6 剩余 runtime 可视态修复
 
 ## 步骤详情
 
@@ -247,7 +249,7 @@
 - 恢复设置页与配置管理 Swift 文件到基线
 
 ### Step 4: 默认值与解码韧性收敛
-状态: in_progress
+状态: done
 前置依赖: Step 3
 
 目标:
@@ -283,7 +285,7 @@
 - 恢复 Swift 模型与相关测试到基线
 
 ### Step 5: GUI/CLI 合同测试补强
-状态: pending
+状态: done
 前置依赖: Step 2, Step 4
 
 目标:
@@ -312,11 +314,15 @@
 - 删除新增测试并恢复 `Package.swift`
 
 ### Step 6: 验证与文档收尾
-状态: pending
-前置依赖: Step 1-5
+状态: done
+前置依赖: Step 1-5, Step 7, Step 8
 
 目标:
 - 用真实操作路径验证 GUI 在 post-refactor 后端上的行为闭环。
+
+完成说明:
+- 本步骤已完成全部复验，包括 Step 7/8 解除阻塞后的两条真实交互路径。
+- 所有验证结论已记录到日志，详见 `gui-post-refactor-log.md` 中"Step 7/8 后复验结论"部分。
 
 允许修改:
 - `/Users/mima0000/.openclaw/fix-my-claw/docs/refactors/gui-post-refactor-log.md`
@@ -337,6 +343,72 @@
 
 回滚:
 - 无需代码回滚，只需更新日志结论
+
+### Step 7: Step 6 blocked 真实交互路径 unblock
+状态: done
+前置依赖: Step 6 已记录 blocked 路径
+
+目标:
+- 优先解除 Step 6 中两条已确认的真实交互路径阻塞：
+  - GUI 手动触发 repair 的真实交互路径
+  - 设置页保存配置后的真实交互路径
+
+允许修改:
+- `/Users/mima0000/.openclaw/fix-my-claw/gui/Sources/FixMyClawGUI/CLIWrapper.swift`
+- `/Users/mima0000/.openclaw/fix-my-claw/gui/Sources/FixMyClawGUI/MenuBarManager.swift`
+- `/Users/mima0000/.openclaw/fix-my-claw/gui/Sources/FixMyClawGUI/MenuBarController.swift`
+- `/Users/mima0000/.openclaw/fix-my-claw/gui/Sources/FixMyClawGUI/ConfigManager.swift`
+- `/Users/mima0000/.openclaw/fix-my-claw/gui/Sources/FixMyClawGUI/Views/SettingsView.swift`
+- 如需要，可补最小测试:
+  - `/Users/mima0000/.openclaw/fix-my-claw/tests/test_gui_cli_support.py`
+  - `/Users/mima0000/.openclaw/fix-my-claw/gui/Package.swift`
+  - `/Users/mima0000/.openclaw/fix-my-claw/gui/Tests/`
+
+必须完成:
+- 解决非 bundle 方式运行 GUI 时，手动 repair 入口在 `UNUserNotificationCenter.current()` 附近触发异常的问题，或在日志中明确收敛为外部运行限制并给出可验证替代路径。
+- 为“设置页保存配置”提供可控、可验证的真实交互路径，避免 GUI 保存动作只能落到真实 `~/.fix-my-claw/config.toml` 才能验证。
+- 如果为验证引入 path override、test hook 或 dev-only 入口，必须保持默认用户路径和现有 CLI 契约不变。
+- `swift build --package-path gui` 继续通过。
+
+完成 gate:
+- Step 6 中“GUI 手动触发 repair，且后台服务原本在运行”不再因当前开发运行方式直接 blocked，具备可重复验证路径。
+- Step 6 中“保存配置后再次 `config show --json` 的 round-trip”具备隔离、可重复的 GUI 侧验证路径。
+- unblock 结论已回写 Step 6 验证日志，并明确 Step 8 的剩余范围。
+
+回滚:
+- 恢复本步骤触及的 `gui-runtime` / `gui-settings` / `gui-contract` 文件到 Step 7 开始前基线
+
+### Step 8: Step 6 剩余 runtime 可视态修复
+状态: done
+前置依赖: Step 7
+
+目标:
+- 修复 Step 6 首轮验证中剩余的两项 runtime 可视态缺口：
+  - 无配置冷启动未稳定落到 `noConfig`
+  - 后台 repair 进行中未稳定显示扳手图标
+
+允许修改:
+- `/Users/mima0000/.openclaw/fix-my-claw/gui/Sources/FixMyClawGUI/CLIWrapper.swift`
+- `/Users/mima0000/.openclaw/fix-my-claw/gui/Sources/FixMyClawGUI/MenuBarManager.swift`
+- `/Users/mima0000/.openclaw/fix-my-claw/gui/Sources/FixMyClawGUI/MenuBarController.swift`
+- 如需要，可补最小测试:
+  - `/Users/mima0000/.openclaw/fix-my-claw/tests/test_gui_cli_support.py`
+  - `/Users/mima0000/.openclaw/fix-my-claw/gui/Package.swift`
+  - `/Users/mima0000/.openclaw/fix-my-claw/gui/Tests/`
+
+必须完成:
+- 复核 `MenuBarManager.start()`、`initialSetup()`、`refreshStatus()`、`performInitialHealthCheck()` 的状态收敛顺序，确保 `config_exists=false` 时稳定显示 `noConfig`，而不是被 `unknown` 覆盖。
+- 复核后台 repair 进行中时 `repair_progress.json` 轮询、状态写入和菜单栏刷新时序，确保 GUI 能稳定进入 `repairing` 图标态。
+- 不扩大到 Step 6 已单独记录的其他验证项。
+- `swift build --package-path gui` 继续通过。
+
+完成 gate:
+- 无配置冷启动路径已能稳定落到 `noConfig` 可视态，且不会回退成乐观健康或长期 `unknown`。
+- 后台 repair 进行中路径已能稳定显示扳手图标，或在日志中升级为明确契约阻塞并停止实现。
+- 修复结论已回写 Step 6 验证日志，供最终收尾复验。
+
+回滚:
+- 恢复本步骤触及的 `gui-runtime` / `gui-contract` 文件到 Step 8 开始前基线
 
 ## 当前已确认的优先级
 P1:
