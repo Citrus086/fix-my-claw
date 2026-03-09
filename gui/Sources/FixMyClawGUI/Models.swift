@@ -6,7 +6,7 @@ import Foundation
 //
 // 模型文件组织：
 // - Models/CLIPayloads.swift: CLI 输出模型 (StatusPayload, CheckPayload, etc.)
-// - Models/ConfigModels.swift: 配置模型 (AppConfig, MonitorConfig, etc.)
+// - Models/Config/: 配置模型 (AppConfig, MonitorConfig, etc.)
 // - Models/LegacyServiceState.swift: 旧 ServiceState 兼容层
 // - Models/RepairModels.swift: 修复相关模型和展示逻辑
 // - Models/CLIError.swift: CLI 错误类型
