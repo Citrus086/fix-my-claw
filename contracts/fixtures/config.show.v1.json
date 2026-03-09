@@ -4,8 +4,8 @@
     "interval_seconds": 60,
     "probe_timeout_seconds": 30,
     "repair_cooldown_seconds": 300,
-    "state_dir": "~/.fix-my-claw",
-    "log_file": "~/.fix-my-claw/fix-my-claw.log",
+    "state_dir": "/Users/mima0000/.fix-my-claw",
+    "log_file": "/Users/mima0000/.fix-my-claw/fix-my-claw.log",
     "log_level": "INFO",
     "log_max_bytes": 5242880,
     "log_backup_count": 5,
@@ -13,17 +13,39 @@
   },
   "openclaw": {
     "command": "openclaw",
-    "state_dir": "~/.openclaw",
-    "workspace_dir": "~/.openclaw/workspace",
-    "health_args": ["gateway", "health", "--json"],
-    "status_args": ["gateway", "status", "--json"],
-    "logs_args": ["logs", "--limit", "200", "--plain"]
+    "state_dir": "/Users/mima0000/.openclaw",
+    "workspace_dir": "/Users/mima0000/.openclaw/workspace",
+    "health_args": [
+      "gateway",
+      "health",
+      "--json"
+    ],
+    "status_args": [
+      "gateway",
+      "status",
+      "--json"
+    ],
+    "logs_args": [
+      "logs",
+      "--limit",
+      "200",
+      "--plain"
+    ]
   },
   "repair": {
     "enabled": true,
     "session_control_enabled": true,
     "session_active_minutes": 30,
-    "session_agents": ["orchestrator", "macs-orchestrator", "builder", "macs-builder", "architect", "macs-architect", "research", "macs-research"],
+    "session_agents": [
+      "orchestrator",
+      "macs-orchestrator",
+      "builder",
+      "macs-builder",
+      "architect",
+      "macs-architect",
+      "research",
+      "macs-research"
+    ],
     "soft_pause_enabled": true,
     "pause_message": "[CONTROL]\nAction: PAUSE\nReason: fix-my-claw detected an unhealthy state and is preserving the current task before stronger recovery.\nExpectation: ACK once, then stay paused until further instruction.\n",
     "pause_wait_seconds": 20,
@@ -32,8 +54,16 @@
     "session_command_timeout_seconds": 120,
     "session_stage_wait_seconds": 1,
     "official_steps": [
-      ["openclaw", "doctor", "--repair"],
-      ["openclaw", "gateway", "restart"]
+      [
+        "openclaw",
+        "doctor",
+        "--repair"
+      ],
+      [
+        "openclaw",
+        "gateway",
+        "restart"
+      ]
     ],
     "step_timeout_seconds": 600,
     "post_step_wait_seconds": 2
@@ -42,8 +72,29 @@
     "enabled": true,
     "window_lines": 200,
     "probe_timeout_seconds": 30,
-    "keywords_stop": ["stop", "halt", "abort", "cancel", "terminate", "停止", "立刻停止", "强制停止", "终止", "停止指令"],
-    "keywords_repeat": ["repeat", "repeating", "loop", "ping-pong", "重复", "死循环", "不断", "一直在重复", "重复汇报"],
+    "keywords_stop": [
+      "stop",
+      "halt",
+      "abort",
+      "cancel",
+      "terminate",
+      "停止",
+      "立刻停止",
+      "强制停止",
+      "终止",
+      "停止指令"
+    ],
+    "keywords_repeat": [
+      "repeat",
+      "repeating",
+      "loop",
+      "ping-pong",
+      "重复",
+      "死循环",
+      "不断",
+      "一直在重复",
+      "重复汇报"
+    ],
     "max_repeat_same_signature": 3,
     "min_cycle_repeated_turns": 4,
     "max_cycle_period": 4,
@@ -54,9 +105,25 @@
     "min_signature_chars": 16,
     "auto_dispatch_check": true,
     "dispatch_window_lines": 20,
-    "keywords_dispatch": ["dispatch", "handoff", "delegate", "assign", "开始实施", "开始执行", "派给", "转交"],
+    "keywords_dispatch": [
+      "dispatch",
+      "handoff",
+      "delegate",
+      "assign",
+      "开始实施",
+      "开始执行",
+      "派给",
+      "转交"
+    ],
     "min_post_dispatch_unexpected_turns": 2,
-    "keywords_architect_active": ["architect", "still output", "continue output", "还在输出", "继续发内容", "连续输出"],
+    "keywords_architect_active": [
+      "architect",
+      "still output",
+      "continue output",
+      "还在输出",
+      "继续发内容",
+      "连续输出"
+    ],
     "similarity_enabled": true,
     "similarity_threshold": 0.82,
     "similarity_min_chars": 12,
@@ -66,6 +133,7 @@
     "channel": "discord",
     "account": "fix-my-claw",
     "target": "channel:YOUR_DISCORD_CHANNEL_ID",
+    "required_mention_id": "",
     "silent": true,
     "send_timeout_seconds": 20,
     "read_timeout_seconds": 20,
@@ -73,27 +141,73 @@
     "ask_timeout_seconds": 300,
     "poll_interval_seconds": 5,
     "read_limit": 20,
+    "max_invalid_replies": 3,
     "level": "all",
     "operator_user_ids": [],
-    "manual_repair_keywords": ["手动修复", "manual repair", "修复", "repair"],
-    "ai_approve_keywords": ["yes", "是"],
-    "ai_reject_keywords": ["no", "否"]
+    "manual_repair_keywords": [
+      "手动修复",
+      "manual repair",
+      "修复",
+      "repair"
+    ],
+    "ai_approve_keywords": [
+      "yes",
+      "是"
+    ],
+    "ai_reject_keywords": [
+      "no",
+      "否"
+    ]
   },
   "ai": {
     "enabled": false,
     "provider": "codex",
     "command": "codex",
-    "args": ["exec", "-s", "workspace-write", "-c", "approval_policy=\"never\"", "--skip-git-repo-check", "-C", "$workspace_dir", "--add-dir", "$openclaw_state_dir", "--add-dir", "$monitor_state_dir"],
+    "args": [
+      "exec",
+      "-s",
+      "workspace-write",
+      "-c",
+      "approval_policy=\"never\"",
+      "--skip-git-repo-check",
+      "-C",
+      "$workspace_dir",
+      "--add-dir",
+      "$openclaw_state_dir",
+      "--add-dir",
+      "$monitor_state_dir"
+    ],
     "timeout_seconds": 1800,
     "max_attempts_per_day": 2,
     "cooldown_seconds": 3600,
     "allow_code_changes": false,
-    "args_code": ["exec", "-s", "danger-full-access", "-c", "approval_policy=\"never\"", "--skip-git-repo-check", "-C", "$workspace_dir"]
+    "args_code": [
+      "exec",
+      "-s",
+      "danger-full-access",
+      "-c",
+      "approval_policy=\"never\"",
+      "--skip-git-repo-check",
+      "-C",
+      "$workspace_dir"
+    ]
   },
   "agent_roles": {
-    "orchestrator": ["orchestrator", "macs-orchestrator"],
-    "builder": ["builder", "macs-builder"],
-    "architect": ["architect", "macs-architect"],
-    "research": ["research", "macs-research"]
+    "orchestrator": [
+      "orchestrator",
+      "macs-orchestrator"
+    ],
+    "builder": [
+      "builder",
+      "macs-builder"
+    ],
+    "architect": [
+      "architect",
+      "macs-architect"
+    ],
+    "research": [
+      "research",
+      "macs-research"
+    ]
   }
 }

@@ -104,6 +104,15 @@ struct AdvancedSettingsView: View, ConfigBindable {
                     )
                 )
 
+                TextFieldRow(
+                    title: "必需 mention ID",
+                    text: binding(
+                        default: "",
+                        get: { $0.notify.requiredMentionId },
+                        set: { $0.notify.requiredMentionId = $1 }
+                    )
+                )
+
                 Toggle(
                     "静默通知",
                     isOn: binding(
@@ -185,6 +194,17 @@ struct AdvancedSettingsView: View, ConfigBindable {
                     ),
                     unit: "条",
                     range: 1...500
+                )
+
+                IntField(
+                    title: "无效回复上限",
+                    value: binding(
+                        default: 3,
+                        get: { $0.notify.maxInvalidReplies },
+                        set: { $0.notify.maxInvalidReplies = $1 }
+                    ),
+                    unit: "次",
+                    range: 1...20
                 )
 
                 LineListEditor(

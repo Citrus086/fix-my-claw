@@ -101,6 +101,9 @@ account = "fix-my-claw"
 # Target for notifications. For Discord, use "channel:YOUR_CHANNEL_ID" or "user:YOUR_USER_ID".
 # You must configure this to receive alerts.
 target = "channel:YOUR_DISCORD_CHANNEL_ID"
+# If set, channel replies must explicitly mention this account/user id.
+# Leave empty to auto-detect from built-in defaults when possible.
+required_mention_id = ""
 silent = true
 send_timeout_seconds = 20
 read_timeout_seconds = 20
@@ -108,6 +111,7 @@ ask_enable_ai = true
 ask_timeout_seconds = 300
 poll_interval_seconds = 5
 read_limit = 20
+max_invalid_replies = 3
 # Notification level: "all" (all events), "important" (AI confirmation, repair failures), "critical" (only critical failures)
 level = "all"
 # If target is channel:..., reply should mention notify account (e.g. "@fix-my-claw yes").
@@ -312,6 +316,7 @@ class NotifyConfig:
     channel: str = "discord"
     account: str = "fix-my-claw"
     target: str = "channel:YOUR_DISCORD_CHANNEL_ID"  # Must be configured by user
+    required_mention_id: str = ""
     silent: bool = True
     send_timeout_seconds: int = 20
     read_timeout_seconds: int = 20
@@ -319,6 +324,7 @@ class NotifyConfig:
     ask_timeout_seconds: int = 300
     poll_interval_seconds: int = 5
     read_limit: int = 20
+    max_invalid_replies: int = 3
     level: str = "all"  # "all" | "important" | "critical"
     operator_user_ids: list[str] = field(default_factory=list)
     # Keywords for manual repair command recognition
@@ -547,6 +553,7 @@ def _parse_notify(raw: dict[str, Any]) -> NotifyConfig:
         channel=str(get_value(raw, "channel", cfg.channel)),
         account=str(get_value(raw, "account", cfg.account)),
         target=str(get_value(raw, "target", cfg.target)),
+        required_mention_id=str(get_value(raw, "required_mention_id", cfg.required_mention_id)).strip(),
         silent=bool(get_value(raw, "silent", cfg.silent)),
         send_timeout_seconds=send_timeout_seconds,
         read_timeout_seconds=read_timeout_seconds,
@@ -556,6 +563,7 @@ def _parse_notify(raw: dict[str, Any]) -> NotifyConfig:
         # Clamp poll interval: min 1s, max 1 hour
         poll_interval_seconds=clamp_int(get_value(raw, "poll_interval_seconds", cfg.poll_interval_seconds), 1, 3600),
         read_limit=clamp_int(get_value(raw, "read_limit", cfg.read_limit), 1),
+        max_invalid_replies=clamp_int(get_value(raw, "max_invalid_replies", cfg.max_invalid_replies), 1, 20),
         level=level_value,
         operator_user_ids=parse_string_list(get_value(raw, "operator_user_ids", cfg.operator_user_ids)),
         # Parse keyword lists (non-empty strings only)

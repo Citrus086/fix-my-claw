@@ -8,7 +8,12 @@
     "ok": false,
     "exit_code": 1,
     "duration_ms": 150,
-    "argv": ["openclaw", "gateway", "health", "--json"],
+    "argv": [
+      "openclaw",
+      "gateway",
+      "health",
+      "--json"
+    ],
     "stdout": "{\"ok\": false}",
     "stderr": "gateway unavailable"
   },
@@ -17,7 +22,12 @@
     "ok": true,
     "exit_code": 0,
     "duration_ms": 80,
-    "argv": ["openclaw", "gateway", "status", "--json"],
+    "argv": [
+      "openclaw",
+      "gateway",
+      "status",
+      "--json"
+    ],
     "stdout": "{\"mode\": \"degraded\"}",
     "stderr": ""
   },
@@ -25,7 +35,13 @@
     "ok": true,
     "exit_code": 0,
     "duration_ms": 25,
-    "argv": ["openclaw", "logs", "--limit", "200", "--plain"]
+    "argv": [
+      "openclaw",
+      "logs",
+      "--limit",
+      "200",
+      "--plain"
+    ]
   },
   "anomaly_guard": {
     "enabled": true,

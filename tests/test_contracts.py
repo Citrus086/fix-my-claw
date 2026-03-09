@@ -135,6 +135,17 @@ class TestConfigShowFixtureMatchesPython(unittest.TestCase):
         self.assertEqual(config.monitor.interval_seconds, 60)
         self.assertEqual(config.repair.enabled, True)
         self.assertEqual(config.notify.level, "all")
+        self.assertEqual(config.notify.required_mention_id, "")
+        self.assertEqual(config.notify.max_invalid_replies, 3)
+
+    def test_notify_fixture_exposes_new_configurable_fields(self) -> None:
+        fixture = load_fixture("config.show.v1.json")
+        notify = fixture["notify"]
+
+        self.assertIn("required_mention_id", notify)
+        self.assertIn("max_invalid_replies", notify)
+        self.assertEqual(notify["required_mention_id"], "")
+        self.assertEqual(notify["max_invalid_replies"], 3)
 
 
 class TestStatusFixtureStructure(unittest.TestCase):

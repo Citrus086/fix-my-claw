@@ -161,6 +161,9 @@ def _message_mentions_notify_account(
 
 
 def _default_required_mention_id(cfg: AppConfig) -> str | None:
+    configured = cfg.notify.required_mention_id.strip()
+    if configured:
+        return configured
     return _KNOWN_NOTIFY_ACCOUNT_IDS.get(_normalize_name_key(cfg.notify.account))
 
 
@@ -297,7 +300,7 @@ def _poll_manual_repair_command(cfg: AppConfig) -> dict[str, Any] | None:
 def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
     if not cfg.notify.ask_enable_ai:
         return {"asked": False, "decision": "skip"}
-    max_invalid_replies = 3
+    max_invalid_replies = cfg.notify.max_invalid_replies
     prompt = ask_enable_ai_prompt(
         cfg.notify.account,
         yes_keywords=cfg.notify.ai_approve_keywords,

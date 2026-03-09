@@ -227,6 +227,16 @@ stagnation_max_novel_cluster_ratio = 0.4
         self.assertEqual(notify.send_timeout_seconds, 42)
         self.assertEqual(notify.read_timeout_seconds, 42)
 
+    def test_parse_notify_sanitizes_required_mention_and_invalid_reply_limit(self) -> None:
+        notify = config_module._parse_notify(
+            {
+                "required_mention_id": "  123456  ",
+                "max_invalid_replies": 0,
+            }
+        )
+        self.assertEqual(notify.required_mention_id, "123456")
+        self.assertEqual(notify.max_invalid_replies, 1)
+
     def test_parse_monitor_sanitizes_invalid_timing_values(self) -> None:
         monitor = config_module._parse_monitor(
             {
@@ -899,6 +909,16 @@ class TestNotifyDecision(unittest.TestCase):
             "yes",
         )
 
+    def test_default_required_mention_id_prefers_configured_value(self) -> None:
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
+                account=TEST_BOT_USERNAME,
+                target="channel:123",
+                required_mention_id="custom-bot-id",
+            )
+        )
+        self.assertEqual(notify_module._default_required_mention_id(cfg), "custom-bot-id")
+
     def test_extract_manual_repair_command_requires_mention_and_operator_filter(self) -> None:
         cfg = config_module.AppConfig(
             notify=config_module.NotifyConfig(
@@ -1150,6 +1170,45 @@ class TestNotifyDecision(unittest.TestCase):
             self.assertEqual(out.get("decision"), "invalid_limit")
             self.assertEqual(out.get("invalid_replies"), 3)
             self.assertEqual(notify_mock.call_count, 3)
+
+    def test_ask_user_enable_ai_uses_configured_invalid_reply_limit(self) -> None:
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
+                account=TEST_BOT_USERNAME,
+                target=f"channel:{TEST_CHANNEL_ID}",
+                ask_enable_ai=True,
+                ask_timeout_seconds=60,
+                poll_interval_seconds=1,
+                max_invalid_replies=2,
+            )
+        )
+        attempt_dir = Path(tempfile.mkdtemp())
+        sent_payload = {"sent": True, "message_id": "m-ask"}
+        invalid_replies = [
+            {
+                "id": "m1",
+                "content": f"<@{TEST_BOT_USER_ID}> maybe",
+                "author": {"id": "u1", "bot": False},
+                "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+            },
+            {
+                "id": "m2",
+                "content": f"<@{TEST_BOT_USER_ID}> 好的",
+                "author": {"id": "u1", "bot": False},
+                "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+            },
+        ]
+        with patch.object(
+            notify_module,
+            "_notify_send",
+            side_effect=[sent_payload, {"sent": True}],
+        ) as notify_mock, patch.object(
+            notify_module, "_resolve_sent_message_author_id", return_value=TEST_BOT_USER_ID
+        ), patch.object(notify_module, "_notify_read_messages", side_effect=[invalid_replies]):
+            out = notify_module._ask_user_enable_ai(cfg, attempt_dir)
+            self.assertEqual(out.get("decision"), "invalid_limit")
+            self.assertEqual(out.get("invalid_replies"), 2)
+            self.assertEqual(notify_mock.call_count, 2)
 
     def test_ask_user_enable_ai_advances_last_seen_by_batch_max_id(self) -> None:
         cfg = config_module.AppConfig(

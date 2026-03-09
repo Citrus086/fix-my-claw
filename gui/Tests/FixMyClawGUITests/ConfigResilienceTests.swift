@@ -25,7 +25,9 @@ final class ConfigResilienceTests: XCTestCase {
             "enabled": false
           },
           "notify": {
-            "channel": "slack"
+            "channel": "slack",
+            "required_mention_id": "123456",
+            "max_invalid_replies": 5
           },
           "ai": {
             "enabled": true
@@ -47,6 +49,8 @@ final class ConfigResilienceTests: XCTestCase {
         XCTAssertEqual(config.anomalyGuard.enabled, false)
         XCTAssertEqual(config.anomalyGuard.similarityThreshold, 0.82)
         XCTAssertEqual(config.notify.channel, "slack")
+        XCTAssertEqual(config.notify.requiredMentionId, "123456")
+        XCTAssertEqual(config.notify.maxInvalidReplies, 5)
         XCTAssertEqual(config.notify.aiApproveKeywords, ["yes", "是"])
         XCTAssertEqual(config.ai.enabled, true)
         XCTAssertEqual(config.ai.argsCode, [

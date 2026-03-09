@@ -142,6 +142,8 @@ class TestConfigJsonSupport(unittest.TestCase):
             data["notify"]["manual_repair_keywords"],
             ["手动修复", "manual repair", "修复", "repair"],
         )
+        self.assertEqual(data["notify"]["required_mention_id"], "")
+        self.assertEqual(data["notify"]["max_invalid_replies"], 3)
         self.assertEqual(data["notify"]["ai_approve_keywords"], ["yes", "是"])
         self.assertEqual(data["notify"]["ai_reject_keywords"], ["no", "否"])
         self.assertEqual(data["ai"]["provider"], "codex")
@@ -273,6 +275,8 @@ class TestGuiCliCommands(unittest.TestCase):
                 },
                 "notify": {
                     "level": "important",
+                    "required_mention_id": "123456",
+                    "max_invalid_replies": 5,
                     "operator_user_ids": ["user-1"],
                     "manual_repair_keywords": ["repair now", "手动修复"],
                     "ai_approve_keywords": ["yes", "批准"],
@@ -319,6 +323,8 @@ class TestGuiCliCommands(unittest.TestCase):
                 written_data["notify"]["manual_repair_keywords"],
                 ["repair now", "手动修复"],
             )
+            self.assertEqual(written_data["notify"]["required_mention_id"], "123456")
+            self.assertEqual(written_data["notify"]["max_invalid_replies"], 5)
             self.assertEqual(written_data["notify"]["ai_approve_keywords"], ["yes", "批准"])
             self.assertEqual(written_data["notify"]["ai_reject_keywords"], ["no", "拒绝"])
             self.assertEqual(

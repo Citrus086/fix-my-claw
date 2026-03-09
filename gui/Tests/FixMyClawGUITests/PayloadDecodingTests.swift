@@ -99,6 +99,8 @@ final class PayloadDecodingTests: XCTestCase {
         XCTAssertEqual(config.repair.enabled, true)
         XCTAssertEqual(config.openclaw.command, "openclaw")
         XCTAssertEqual(config.notify.level, "all")
+        XCTAssertEqual(config.notify.requiredMentionId, "")
+        XCTAssertEqual(config.notify.maxInvalidReplies, 3)
         XCTAssertEqual(config.ai.argsCode, [
             "exec",
             "-s", "danger-full-access",
