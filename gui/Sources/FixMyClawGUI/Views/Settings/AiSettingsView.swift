@@ -49,14 +49,14 @@ struct AiSettingsView: View, ConfigBindable {
                 messageTone: .warning
             )
 
-            TextFieldRow(
-                title: "执行命令",
-                text: binding(
-                    default: "codex",
-                    get: { $0.ai.command },
-                    set: { $0.ai.command = $1 }
-                ),
-                description: "默认值: `codex`。支持 PATH 里的命令名或绝对路径。",
+                TextFieldRow(
+                    title: "执行命令",
+                    text: binding(
+                        default: "codex",
+                        get: { $0.ai.command },
+                        set: { $0.ai.command = $1 }
+                    ),
+                description: "默认值: `codex`。可以填命令名或绝对路径，但 GUI / Finder 链路更稳妥的是直接保存绝对路径。",
                 message: aiCommandMessage?.text,
                 messageTone: aiCommandMessage?.tone ?? .info
             )
@@ -206,22 +206,69 @@ private extension AiSettingsView {
 
         let expanded = (trimmed as NSString).expandingTildeInPath
         if trimmed.contains("/") {
+            guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~") else {
+                return ("\(kind) 当前是相对路径。GUI / Finder 链路更稳妥的是绝对路径。", .warning)
+            }
             let path = URL(fileURLWithPath: expanded).standardizedFileURL.path
             let isExecutable = FileManager.default.isExecutableFile(atPath: path)
-            return isExecutable
-                ? ("已解析到可执行路径: \(path)", .info)
-                : ("未找到可执行文件: \(path)", .warning)
+            guard isExecutable else {
+                return ("未找到可执行文件: \(path)", .warning)
+            }
+            return resolvedExecutableMessage(
+                resolvedPath: path,
+                sourceCommand: trimmed,
+                kind: kind,
+                resolvedViaPATH: false
+            )
         }
 
-        let envPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        let searchPaths = envPath.split(separator: ":").map(String.init)
-        if let found = searchPaths
-            .map({ URL(fileURLWithPath: $0).appendingPathComponent(trimmed).path })
-            .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            return ("将在 PATH 中解析为: \(found)", .info)
+        if let found = OpenClawCommandValidator.resolveFromPATH(commandName: trimmed) {
+            return resolvedExecutableMessage(
+                resolvedPath: found,
+                sourceCommand: trimmed,
+                kind: kind,
+                resolvedViaPATH: true
+            )
         }
 
         return ("当前 PATH 中找不到 `\(trimmed)`，运行时可能直接失败。", .warning)
+    }
+
+    func resolvedExecutableMessage(
+        resolvedPath: String,
+        sourceCommand: String,
+        kind: String,
+        resolvedViaPATH: Bool
+    ) -> (text: String, tone: FormMessageTone) {
+        if OpenClawCommandValidator.usesEnvNodeShebang(atPath: resolvedPath) {
+            guard let nodePath = OpenClawCommandValidator.resolveNodePath(forCommandPath: resolvedPath) else {
+                return (
+                    "\(kind) 指向的是 Node 启动脚本 \(resolvedPath)，但当前环境找不到可执行的 node。AI 修复运行时很可能直接失败。",
+                    .warning
+                )
+            }
+
+            if resolvedViaPATH {
+                return (
+                    "\(kind) 当前会通过 PATH 把 `\(sourceCommand)` 解析成 Node 脚本 \(resolvedPath)，并依赖 \(nodePath)。当前机器可用，但 GUI / Finder 环境更稳妥的是改成绝对路径或固定 launcher。",
+                    .warning
+                )
+            }
+
+            return (
+                "\(kind) 是 Node 启动脚本，将依赖 \(nodePath) 启动 \(resolvedPath)。迁移到别的机器时也要确认 node 路径可用。",
+                .info
+            )
+        }
+
+        if resolvedViaPATH {
+            return (
+                "\(kind) 当前会通过 PATH 解析为: \(resolvedPath)。你这台机器现在没问题，但 GUI / Finder 链路更稳妥的是直接保存绝对路径。",
+                .warning
+            )
+        }
+
+        return ("已解析到可执行路径: \(resolvedPath)", .info)
     }
 
     func commandArgumentWarning(

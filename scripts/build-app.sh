@@ -49,7 +49,6 @@ build_cli() {
         --hidden-import=fix_my_claw \
         --hidden-import=fix_my_claw.cli \
         --hidden-import=fix_my_claw.config \
-        --hidden-import=fix_my_claw.core \
         --hidden-import=fix_my_claw.health \
         --hidden-import=fix_my_claw.monitor \
         --hidden-import=fix_my_claw.repair \

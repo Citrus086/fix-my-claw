@@ -242,12 +242,12 @@ def _get_launchd_domain() -> str:
 
 
 def _get_fix_my_claw_path() -> str:
-    current = shutil.which("fix-my-claw")
-    if current:
-        return str(Path(current).resolve())
     argv0 = Path(sys.argv[0]).expanduser()
     if argv0.name == "fix-my-claw" and argv0.exists():
         return str(argv0.resolve())
+    current = shutil.which("fix-my-claw")
+    if current:
+        return str(Path(current).resolve())
     raise FileNotFoundError("fix-my-claw not found in PATH")
 
 

@@ -202,6 +202,15 @@ struct MenuBuilder {
             )
             createConfigItem.target = target
             menu.addItem(createConfigItem)
+
+        case .setupRequired:
+            let setupItem = NSMenuItem(
+                title: "⚙️ 配置 OpenClaw CLI",
+                action: #selector(MenuBarController.openOpenClawSetup),
+                keyEquivalent: ""
+            )
+            setupItem.target = target
+            menu.addItem(setupItem)
             
         case .uninitialized, .unknown, .checking:
             let loadingItem = NSMenuItem(title: "⏳ 获取中...", action: nil, keyEquivalent: "")
@@ -221,6 +230,17 @@ struct MenuBuilder {
     }
     
     private static func addActionSection(to menu: NSMenu, state: MenuState, target: MenuBarController) {
+        if case .setupRequired = state.effectiveState {
+            let setupItem = NSMenuItem(
+                title: "⚙️ 先配置 OpenClaw CLI",
+                action: #selector(MenuBarController.openOpenClawSetup),
+                keyEquivalent: ""
+            )
+            setupItem.target = target
+            menu.addItem(setupItem)
+            return
+        }
+
         // 立即检查
         let checkItem = NSMenuItem(
             title: "🔍 立即检查",

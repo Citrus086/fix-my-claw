@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +16,7 @@ from fix_my_claw import config as config_module
 from fix_my_claw import health as health_module
 from fix_my_claw import protocol as protocol_module
 from fix_my_claw import repair_types
+from fix_my_claw import runtime as runtime_module
 from fix_my_claw import state as state_module
 from fix_my_claw.runtime import CmdResult
 
@@ -155,6 +158,37 @@ class TestConfigJsonSupport(unittest.TestCase):
 
 
 class TestGuiCliCommands(unittest.TestCase):
+    def test_run_cmd_uses_explicit_env_without_path_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "show-path.py"
+            script_path.write_text(
+                "import os\nprint(os.environ.get('PATH', ''))\n",
+                encoding="utf-8",
+            )
+
+            result = runtime_module.run_cmd(
+                [sys.executable, str(script_path)],
+                timeout_seconds=5,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stdout.strip(), "/usr/bin:/bin")
+
+    def test_get_fix_my_claw_path_prefers_current_argv0_over_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_bin = Path(tmpdir) / "FixMyClawGUI.app" / "Contents" / "MacOS" / "fix-my-claw"
+            path_bin = Path(tmpdir) / "bin" / "fix-my-claw"
+            bundle_bin.parent.mkdir(parents=True, exist_ok=True)
+            path_bin.parent.mkdir(parents=True, exist_ok=True)
+            bundle_bin.write_text("", encoding="utf-8")
+            path_bin.write_text("", encoding="utf-8")
+
+            with patch("sys.argv", [str(bundle_bin)]), patch.object(shutil, "which", return_value=str(path_bin)):
+                resolved = cli._get_fix_my_claw_path()
+
+            self.assertEqual(resolved, str(bundle_bin.resolve()))
+
     def test_cmd_config_show_emits_json_payload(self) -> None:
         cfg = config_module.AppConfig(
             monitor=config_module.MonitorConfig(interval_seconds=75),

@@ -30,7 +30,7 @@ struct AdvancedSettingsView: View, ConfigBindable {
                         get: { $0.openclaw.command },
                         set: { $0.openclaw.command = $1 }
                     ),
-                    description: "默认值: `openclaw`。支持 PATH 里的命令名或绝对路径。",
+                    description: "GUI 启动链路要求这里保存为绝对可执行路径。裸命令会触发启动配置向导。",
                     message: openClawCommandMessage?.text,
                     messageTone: openClawCommandMessage?.tone ?? .info
                 )
@@ -558,28 +558,16 @@ private extension AdvancedSettingsView {
     }
 
     func executableMessage(for command: String, label: String) -> (text: String, tone: FormMessageTone)? {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return ("\(label) 不能为空。", .warning)
+        switch OpenClawCommandValidator.assess(command) {
+        case .valid(let normalizedPath):
+            return ("\(label) 已锁定为可执行绝对路径: \(normalizedPath)", .info)
+        case .validNodeScript(let normalizedPath, let nodePath):
+            return ("\(label) 是 Node 启动脚本。保存时会自动生成固定 launcher，使用 \(nodePath) 启动 \(normalizedPath)。", .info)
+        case .requiresNodePath(_, let message):
+            return (message, .warning)
+        case .requiresSetup(let message):
+            return (message, .warning)
         }
-
-        let expanded = (trimmed as NSString).expandingTildeInPath
-        if trimmed.contains("/") {
-            let path = URL(fileURLWithPath: expanded).standardizedFileURL.path
-            return FileManager.default.isExecutableFile(atPath: path)
-                ? ("已解析到可执行路径: \(path)", .info)
-                : ("未找到可执行文件: \(path)", .warning)
-        }
-
-        let envPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        let searchPaths = envPath.split(separator: ":").map(String.init)
-        if let found = searchPaths
-            .map({ URL(fileURLWithPath: $0).appendingPathComponent(trimmed).path })
-            .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            return ("将在 PATH 中解析为: \(found)", .info)
-        }
-
-        return ("当前 PATH 中找不到 `\(trimmed)`，OpenClaw 探测与日志读取会直接失败。", .warning)
     }
 
     func directoryMessage(for rawPath: String, label: String) -> (text: String, tone: FormMessageTone)? {

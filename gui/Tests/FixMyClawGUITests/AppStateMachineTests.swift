@@ -76,6 +76,18 @@ final class AppStateMachineTests: XCTestCase {
         store.send(.configLoaded(exists: true))
         XCTAssertEqual(store.state, .unknown)
     }
+
+    func testOpenClawSetupRequiredBlocksHealthChecksUntilConfigured() {
+        let store = MenuBarStore()
+        store.send(.openClawSetupRequired)
+        XCTAssertEqual(store.state, .setupRequired)
+
+        store.send(.healthCheckStarted)
+        XCTAssertEqual(store.state, .setupRequired)
+
+        store.send(.openClawSetupSatisfied)
+        XCTAssertEqual(store.state, .unknown)
+    }
     
     // MARK: - 健康检查状态转换测试
     

@@ -7,10 +7,22 @@ private struct RawConfigSnapshot {
     let config: AppConfig
 }
 
+private enum ConfigManagerError: LocalizedError {
+    case invalidOpenClawCommand(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidOpenClawCommand(let message):
+            return message
+        }
+    }
+}
+
 @MainActor
 class ConfigManager: ObservableObject {
     static let shared = ConfigManager()
     nonisolated static let configPathOverrideEnvironmentKey = "FIX_MY_CLAW_GUI_CONFIG_PATH"
+    nonisolated private static let nodeBackedOpenClawLauncherName = "openclaw-gui-launch"
 
     let defaultConfigPath: String
     let defaultStateDirectoryURL: URL
@@ -34,18 +46,7 @@ class ConfigManager: ObservableObject {
 
     func loadConfig() {
         Task {
-            isLoading = true
-            defer { isLoading = false }
-
-            do {
-                let snapshot = try await fetchConfigSnapshot()
-                rawConfigPayload = snapshot.payload
-                config = snapshot.config
-                lastError = nil
-                saveError = nil
-            } catch {
-                lastError = "加载配置失败: \(error.localizedDescription)"
-            }
+            _ = await loadConfigIfPresent()
         }
     }
 
@@ -56,13 +57,7 @@ class ConfigManager: ObservableObject {
             defer { isLoading = false }
 
             do {
-                let mergedPayload = try mergedPayload(with: config)
-                let jsonData = try Self.serializeJSON(mergedPayload)
-                _ = try await runConfigCommand(args: configCommandArgs(subcommand: ["config", "set", "--json"]), input: jsonData)
-
-                let snapshot = try await fetchConfigSnapshot()
-                rawConfigPayload = snapshot.payload
-                self.config = snapshot.config
+                self.config = try await persist(config: config)
                 saveError = nil
                 lastError = nil
             } catch {
@@ -94,6 +89,53 @@ class ConfigManager: ObservableObject {
         }
     }
 
+    @discardableResult
+    func loadConfigIfPresent() async -> Bool {
+        isLoading = true
+        defer { isLoading = false }
+
+        guard configExists else {
+            config = nil
+            rawConfigPayload = [:]
+            return false
+        }
+
+        do {
+            let snapshot = try await fetchConfigSnapshot()
+            rawConfigPayload = snapshot.payload
+            config = snapshot.config
+            lastError = nil
+            saveError = nil
+            return true
+        } catch {
+            lastError = "加载配置失败: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func prepareEditableConfig() async {
+        if configExists {
+            _ = await loadConfigIfPresent()
+            return
+        }
+
+        config = AppConfig()
+        rawConfigPayload = [:]
+        lastError = nil
+        saveError = nil
+    }
+
+    @discardableResult
+    func saveOpenClawCommand(_ command: String, nodePathOverride: String? = nil) async throws -> String {
+        var editable = config ?? AppConfig()
+        editable.openclaw.command = command
+        let savedConfig = try await persist(config: editable, openClawNodePathOverride: nodePathOverride)
+        self.config = savedConfig
+        saveError = nil
+        lastError = nil
+        return savedConfig.openclaw.command
+    }
+
     private func fetchConfigSnapshot() async throws -> RawConfigSnapshot {
         let stdout = try await runConfigCommand(args: configCommandArgs(subcommand: ["config", "show", "--json"]))
         let payload = try Self.decodeJSONObject(from: stdout)
@@ -104,6 +146,71 @@ class ConfigManager: ObservableObject {
 
     private func mergedPayload(with config: AppConfig) throws -> [String: Any] {
         try Self.mergePayloadPreservingUnknownFields(basePayload: rawConfigPayload, modelConfig: config)
+    }
+
+    private func persist(
+        config: AppConfig,
+        openClawNodePathOverride: String? = nil
+    ) async throws -> AppConfig {
+        let normalizedConfig = try normalizedConfigForSaving(
+            config,
+            openClawNodePathOverride: openClawNodePathOverride
+        )
+        let mergedPayload = try mergedPayload(with: normalizedConfig)
+        let jsonData = try Self.serializeJSON(mergedPayload)
+        _ = try await runConfigCommand(args: configCommandArgs(subcommand: ["config", "set", "--json"]), input: jsonData)
+
+        let snapshot = try await fetchConfigSnapshot()
+        rawConfigPayload = snapshot.payload
+        return snapshot.config
+    }
+
+    private func normalizedConfigForSaving(
+        _ config: AppConfig,
+        openClawNodePathOverride: String? = nil
+    ) throws -> AppConfig {
+        var normalized = config
+        switch OpenClawCommandValidator.assess(
+            config.openclaw.command,
+            explicitNodePath: openClawNodePathOverride
+        ) {
+        case .valid(let normalizedPath):
+            normalized.openclaw.command = normalizedPath
+            return normalized
+        case .validNodeScript(let normalizedPath, let nodePath):
+            normalized.openclaw.command = try ensureNodeBackedOpenClawLauncher(
+                commandPath: normalizedPath,
+                nodePath: nodePath
+            )
+            return normalized
+        case .requiresNodePath(_, let message):
+            throw ConfigManagerError.invalidOpenClawCommand(message)
+        case .requiresSetup(let message):
+            throw ConfigManagerError.invalidOpenClawCommand(message)
+        }
+    }
+
+    private func ensureNodeBackedOpenClawLauncher(commandPath: String, nodePath: String) throws -> String {
+        let launcherDirectory = URL(fileURLWithPath: defaultConfigPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("bin", isDirectory: true)
+        let launcherURL = launcherDirectory.appendingPathComponent(Self.nodeBackedOpenClawLauncherName, isDirectory: false)
+
+        try FileManager.default.createDirectory(
+            at: launcherDirectory,
+            withIntermediateDirectories: true
+        )
+
+        let script = Self.nodeBackedOpenClawLauncherScript(
+            commandPath: commandPath,
+            nodePath: nodePath
+        )
+        try script.write(to: launcherURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: launcherURL.path
+        )
+        return launcherURL.path
     }
 
     private func configCommandArgs(subcommand: [String]) -> [String] {
@@ -173,6 +280,13 @@ class ConfigManager: ObservableObject {
         try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
     }
 
+    nonisolated static func nodeBackedOpenClawLauncherScript(commandPath: String, nodePath: String) -> String {
+        """
+        #!/bin/sh
+        exec "\(shellEscapeForDoubleQuotes(nodePath))" "\(shellEscapeForDoubleQuotes(commandPath))" "$@"
+        """
+    }
+
     nonisolated static func mergePayloadPreservingUnknownFields(
         basePayload: [String: Any],
         modelConfig: AppConfig
@@ -214,5 +328,13 @@ class ConfigManager: ObservableObject {
 
     nonisolated private static func normalizePath(_ path: String) -> String {
         URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+    }
+
+    nonisolated private static func shellEscapeForDoubleQuotes(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "$", with: "\\$")
+            .replacingOccurrences(of: "`", with: "\\`")
     }
 }

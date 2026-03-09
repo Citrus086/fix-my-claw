@@ -223,6 +223,7 @@ final class MenuBarStore: ObservableObject {
         case .repairing: return .repairing
         case .awaitingApproval: return .awaitingApproval
         case .noConfig: return .noConfig
+        case .setupRequired: return .noConfig
         }
     }
     

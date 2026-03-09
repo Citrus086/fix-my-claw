@@ -29,6 +29,7 @@ class MenuBarManager: ObservableObject {
     // MARK: - UserDefaults Keys
     
     private let hasShownWelcomeKey = "fixMyClawGUI.hasShownWelcome"
+    private var startupHealthCheckPending = false
     
     // MARK: - 计算属性（转发自 Store）
     
@@ -74,6 +75,9 @@ class MenuBarManager: ObservableObject {
             await pollRepairProgress()
             await pollApprovalRequest()
             await initialSetup()
+            guard await ensureOpenClawCommandConfigured(continueStartupCheckOnSuccess: true) else {
+                return
+            }
             await performInitialHealthCheck()
         }
     }
@@ -117,10 +121,8 @@ class MenuBarManager: ObservableObject {
             store.setError("未找到 fix-my-claw CLI", category: .cliIO)
             return
         }
-        
-        if ConfigManager.shared.configExists {
-            ConfigManager.shared.loadConfig()
-        }
+
+        await ConfigManager.shared.prepareEditableConfig()
         
         _ = await refreshServiceStatus()
         await syncPersistedRepairResult(notifyIfNew: false)
@@ -131,6 +133,120 @@ class MenuBarManager: ObservableObject {
         if !hasShownWelcome, serviceStatus?.installed == false {
             hasShownWelcome = true
             presentWelcomeDialog()
+        }
+    }
+
+    @discardableResult
+    private func ensureOpenClawCommandConfigured(
+        presentWizardIfNeeded: Bool = true,
+        continueStartupCheckOnSuccess: Bool = false
+    ) async -> Bool {
+        await ConfigManager.shared.prepareEditableConfig()
+
+        if ConfigManager.shared.configExists, ConfigManager.shared.config == nil {
+            let message = ConfigManager.shared.lastError ?? "加载配置失败，无法检查 OpenClaw CLI 路径。"
+            store.setError(message, category: .config)
+            return false
+        }
+
+        let configuredCommand = ConfigManager.shared.config?.openclaw.command ?? OpenClawConfig().command
+        switch OpenClawCommandValidator.assess(configuredCommand) {
+        case .valid(let normalizedPath):
+            if configuredCommand != normalizedPath {
+                do {
+                    _ = try await ConfigManager.shared.saveOpenClawCommand(normalizedPath)
+                } catch {
+                    let message = "保存 OpenClaw CLI 路径失败: \(error.localizedDescription)"
+                    store.setError(message, category: .config)
+                    store.send(.openClawSetupRequired)
+                    if continueStartupCheckOnSuccess {
+                        startupHealthCheckPending = true
+                    }
+                    if presentWizardIfNeeded {
+                        presentOpenClawSetup(guidanceMessage: message)
+                    }
+                    return false
+                }
+            }
+
+            store.send(.configLoaded(exists: ConfigManager.shared.configExists))
+            store.send(.openClawSetupSatisfied)
+            store.setError(nil, category: .config)
+            return true
+
+        case .validNodeScript(_, _):
+            do {
+                let savedPath = try await ConfigManager.shared.saveOpenClawCommand(configuredCommand)
+                store.send(.configLoaded(exists: ConfigManager.shared.configExists))
+                store.send(.openClawSetupSatisfied)
+                store.setError(nil, category: .config)
+                if savedPath != configuredCommand {
+                    print("[GUI] OpenClaw command normalized to launcher: \(savedPath)")
+                }
+                return true
+            } catch {
+                let message = "保存 OpenClaw CLI launcher 失败: \(error.localizedDescription)"
+                store.setError(message, category: .config)
+                store.send(.openClawSetupRequired)
+                if continueStartupCheckOnSuccess {
+                    startupHealthCheckPending = true
+                }
+                if presentWizardIfNeeded {
+                    presentOpenClawSetup(guidanceMessage: message)
+                }
+                return false
+            }
+
+        case .requiresNodePath(_, let message):
+            store.setError(message, category: .config)
+            store.send(.openClawSetupRequired)
+            if continueStartupCheckOnSuccess {
+                startupHealthCheckPending = true
+            }
+            if presentWizardIfNeeded {
+                presentOpenClawSetup(guidanceMessage: message)
+            }
+            return false
+
+        case .requiresSetup(let message):
+            store.setError(message, category: .config)
+            store.send(.openClawSetupRequired)
+            if continueStartupCheckOnSuccess {
+                startupHealthCheckPending = true
+            }
+            if presentWizardIfNeeded {
+                presentOpenClawSetup(guidanceMessage: message)
+            }
+            return false
+        }
+    }
+
+    private func presentOpenClawSetup(guidanceMessage: String? = nil) {
+        let fallbackMessage: String?
+        switch OpenClawCommandValidator.assess(
+            ConfigManager.shared.config?.openclaw.command ?? OpenClawConfig().command
+        ) {
+        case .requiresNodePath(_, let message), .requiresSetup(let message):
+            fallbackMessage = message
+        case .valid, .validNodeScript:
+            fallbackMessage = nil
+        }
+
+        windowCoordinator.openOpenClawSetup(
+            configManager: ConfigManager.shared,
+            guidanceMessage: guidanceMessage ?? fallbackMessage
+        ) { [weak self] in
+            guard let self else { return }
+
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard await self.ensureOpenClawCommandConfigured() else { return }
+
+                if self.startupHealthCheckPending && !self.store.hasPerformedInitialCheck {
+                    self.startupHealthCheckPending = false
+                    await self.performInitialHealthCheck()
+                }
+            }
         }
     }
     
@@ -194,6 +310,7 @@ class MenuBarManager: ObservableObject {
         guard !store.isLoading else { return }
         
         Task {
+            guard await ensureOpenClawCommandConfigured() else { return }
             store.setLoading(true)
             defer { store.setLoading(false) }
             
@@ -216,6 +333,7 @@ class MenuBarManager: ObservableObject {
         guard !store.isLoading else { return }
         
         Task {
+            guard await ensureOpenClawCommandConfigured() else { return }
             store.setLoading(true)
             store.beginHealthCheck()
             
@@ -235,6 +353,7 @@ class MenuBarManager: ObservableObject {
         guard !store.isLoading else { return }
         
         Task {
+            guard await ensureOpenClawCommandConfigured() else { return }
             store.setLoading(true)
             store.updateRepairStage("starting")
             
@@ -271,6 +390,7 @@ class MenuBarManager: ObservableObject {
     func installService() {
         guard !store.isLoading else { return }
         Task {
+            guard await ensureOpenClawCommandConfigured() else { return }
             store.setLoading(true)
             defer { store.setLoading(false) }
             do {
@@ -292,8 +412,11 @@ class MenuBarManager: ObservableObject {
             do {
                 try await services.createDefaultConfig(at: nil, force: true)
                 _ = try? await services.disableMonitoring(configPath: nil)
-                ConfigManager.shared.loadConfig()
+                await ConfigManager.shared.prepareEditableConfig()
                 refreshStateObservation()
+                guard await ensureOpenClawCommandConfigured() else {
+                    return
+                }
                 await refreshStatus()
                 await syncPersistedRepairResult(notifyIfNew: false)
                 store.setError(nil)
@@ -320,6 +443,7 @@ class MenuBarManager: ObservableObject {
     func startService() {
         guard !store.isLoading else { return }
         Task {
+            guard await ensureOpenClawCommandConfigured() else { return }
             store.setLoading(true)
             defer { store.setLoading(false) }
             do {
@@ -343,6 +467,10 @@ class MenuBarManager: ObservableObject {
                 store.setError("停止服务失败: \(error.localizedDescription)", category: .cliIO)
             }
         }
+    }
+
+    func openOpenClawSetup() {
+        presentOpenClawSetup()
     }
     
     func openLogFile() {
@@ -442,12 +570,14 @@ class MenuBarManager: ObservableObject {
 
     private func runScheduledHealthRefresh() async -> Bool {
         guard ConfigManager.shared.configExists else { return true }
+        if case .setupRequired = store.state { return true }
         return await periodicHealthCheck()
     }
     
     private func periodicHealthCheck() async -> Bool {
         guard !store.isLoading else { return true }
         guard ConfigManager.shared.configExists else { return true }
+        guard await ensureOpenClawCommandConfigured(presentWizardIfNeeded: false) else { return true }
         
         do {
             try await refreshHealthSnapshot(notifyOnChange: true)

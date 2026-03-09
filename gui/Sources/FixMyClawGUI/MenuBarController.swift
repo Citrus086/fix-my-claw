@@ -112,6 +112,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     @objc func openSettings() {
         windowCoordinator.openSettings()
     }
+
+    @objc func openOpenClawSetup() {
+        manager.openOpenClawSetup()
+    }
     
     @objc func showAbout() {
         windowCoordinator.showAbout()

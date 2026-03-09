@@ -31,6 +31,9 @@ enum AppState: Equatable {
     
     /// 无配置文件
     case noConfig
+
+    /// 需要先配置 OpenClaw CLI 绝对路径
+    case setupRequired
     
     /// 检查中
     case checking
@@ -106,6 +109,7 @@ extension AppState {
         case .repairing: return "🔧"
         case .awaitingApproval: return "❓"
         case .noConfig: return "⚙️"
+        case .setupRequired: return "⚙️"
         }
     }
     
@@ -122,6 +126,7 @@ extension AppState {
         case .repairing(let stage): return "修复中...(\(stage.displayName))"
         case .awaitingApproval: return "等待审批"
         case .noConfig: return "未配置"
+        case .setupRequired: return "等待配置 OpenClaw CLI"
         }
     }
     
@@ -176,6 +181,8 @@ enum AppStateEvent {
     case healthCheckCompleted(result: CheckPayload, monitoringEnabled: Bool)
     case healthCheckFailed(error: String)
     case monitoringToggled(enabled: Bool)
+    case openClawSetupRequired
+    case openClawSetupSatisfied
     case repairStarted
     case repairProgressed(stage: String)
     case repairCompleted
@@ -211,6 +218,8 @@ struct AppStateReducer {
             switch state {
             case .uninitialized, .noConfig:
                 return .unknown
+            case .setupRequired:
+                return .setupRequired
             default:
                 return state
             }
@@ -220,6 +229,7 @@ struct AppStateReducer {
             if case .repairing = state { return state }
             if case .awaitingApproval = state { return state }
             if case .noConfig = state { return state }
+            if case .setupRequired = state { return state }
             return .checking
             
         case .healthCheckCompleted(let result, let monitoringEnabled):
@@ -239,6 +249,17 @@ struct AppStateReducer {
             
         case .monitoringToggled(let enabled):
             return toggleMonitoring(state: state, enabled: enabled)
+
+        case .openClawSetupRequired:
+            return .setupRequired
+
+        case .openClawSetupSatisfied:
+            switch state {
+            case .setupRequired, .noConfig, .uninitialized:
+                return .unknown
+            default:
+                return state
+            }
             
         case .repairStarted:
             if case .awaitingApproval = state { return state }

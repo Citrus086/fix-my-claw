@@ -15,6 +15,10 @@ Options:
 EOF
 }
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+APP_BUNDLED_CLI="$PROJECT_ROOT/dist/FixMyClawGUI.app/Contents/MacOS/fix-my-claw"
+
 FIX_MY_CLAW_BIN=""
 FORCE=0
 
@@ -46,6 +50,9 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+if [[ -z "$FIX_MY_CLAW_BIN" && -x "$APP_BUNDLED_CLI" ]]; then
+  FIX_MY_CLAW_BIN="$APP_BUNDLED_CLI"
+fi
 if [[ -z "$FIX_MY_CLAW_BIN" ]]; then
   FIX_MY_CLAW_BIN="$(command -v fix-my-claw || true)"
 fi
@@ -60,7 +67,6 @@ fi
 FIX_MY_CLAW_BIN="$(cd -- "$(dirname -- "$FIX_MY_CLAW_BIN")" && pwd)/$(basename -- "$FIX_MY_CLAW_BIN")"
 [[ -x "$FIX_MY_CLAW_BIN" ]] || { echo "fix-my-claw is not executable: $FIX_MY_CLAW_BIN" >&2; exit 1; }
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
 CONFIG_PATH="$HOME/.fix-my-claw/config.toml"

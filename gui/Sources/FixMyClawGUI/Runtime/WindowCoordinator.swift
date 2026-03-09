@@ -17,6 +17,9 @@ final class WindowCoordinator {
     private let alertPresenter = AlertPresenter.shared
     private var settingsWindow: NSWindow?
     private var settingsWindowCloseObserver: NSObjectProtocol?
+    private var openClawSetupWindow: NSWindow?
+    private var openClawSetupCloseObserver: NSObjectProtocol?
+    private var openClawSetupCompletion: (@MainActor () -> Void)?
     private var lastPresentedError: RuntimeAlert?
 
     private init() {}
@@ -108,6 +111,57 @@ final class WindowCoordinator {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func openOpenClawSetup(
+        configManager: ConfigManager = .shared,
+        guidanceMessage: String? = nil,
+        onComplete: (@MainActor () -> Void)? = nil
+    ) {
+        if let onComplete {
+            openClawSetupCompletion = onComplete
+        }
+
+        if let openClawSetupWindow {
+            openClawSetupWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let initialCommand = configManager.config?.openclaw.command ?? OpenClawConfig().command
+        let hostingController = NSHostingController(
+            rootView: OpenClawSetupView(
+                initialCommand: initialCommand,
+                guidanceMessage: guidanceMessage
+            ) { [weak self] in
+                self?.completeOpenClawSetup()
+            }
+            .environmentObject(configManager)
+        )
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "配置 OpenClaw CLI"
+        window.setContentSize(NSSize(width: 760, height: 520))
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.center()
+
+        openClawSetupWindow = window
+        openClawSetupCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.openClawSetupWindow = nil
+                if let observer = self?.openClawSetupCloseObserver {
+                    NotificationCenter.default.removeObserver(observer)
+                    self?.openClawSetupCloseObserver = nil
+                }
+            }
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
         NSApplication.shared.orderFrontStandardAboutPanel([
@@ -150,5 +204,12 @@ final class WindowCoordinator {
         case .backgroundStatus:
             return ("fix-my-claw 后台状态提示", alert.message, .informational)
         }
+    }
+
+    private func completeOpenClawSetup() {
+        openClawSetupCompletion?()
+        openClawSetupCompletion = nil
+        openClawSetupWindow?.orderOut(nil)
+        openClawSetupWindow?.close()
     }
 }

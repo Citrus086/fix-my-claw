@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -36,7 +37,7 @@ def run_cmd(
             text=True,
             capture_output=True,
             cwd=str(cwd) if cwd is not None else None,
-            env=env,
+            env=dict(os.environ if env is None else env),
             timeout=timeout_seconds,
         )
         code = cp.returncode
