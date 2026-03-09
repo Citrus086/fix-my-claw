@@ -54,4 +54,48 @@ final class RuntimeSchedulerTests: XCTestCase {
 
         await fulfillment(of: [fileChangeExpectation], timeout: 2.0)
     }
+
+    @MainActor
+    func testRefreshStateObservationSwitchesObservedDirectory() async throws {
+        let scheduler = RuntimeScheduler()
+        let oldDirectoryExpectation = expectation(description: "old directory should not trigger")
+        oldDirectoryExpectation.isInverted = true
+        let newDirectoryExpectation = expectation(description: "new directory triggers")
+
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let originalDirectoryURL = rootURL.appendingPathComponent("original", isDirectory: true)
+        let replacementDirectoryURL = rootURL.appendingPathComponent("replacement", isDirectory: true)
+        try FileManager.default.createDirectory(at: originalDirectoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: replacementDirectoryURL, withIntermediateDirectories: true)
+
+        defer {
+            scheduler.stop()
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+
+        scheduler.start(
+            statusAction: { true },
+            healthAction: { true },
+            stateDirectoryURL: originalDirectoryURL,
+            fileChangeHandler: {
+                oldDirectoryExpectation.fulfill()
+            }
+        )
+
+        try await Task.sleep(for: .milliseconds(200))
+        scheduler.refreshStateObservation(
+            directoryURL: replacementDirectoryURL,
+            onChange: {
+                newDirectoryExpectation.fulfill()
+            }
+        )
+
+        try await Task.sleep(for: .milliseconds(200))
+        try Data("{}".utf8).write(to: originalDirectoryURL.appendingPathComponent("repair_progress.json"))
+        await fulfillment(of: [oldDirectoryExpectation], timeout: 0.5)
+
+        try Data("{}".utf8).write(to: replacementDirectoryURL.appendingPathComponent("repair_progress.json"))
+        await fulfillment(of: [newDirectoryExpectation], timeout: 2.0)
+    }
 }
