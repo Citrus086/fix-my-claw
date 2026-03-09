@@ -1,8 +1,12 @@
+import Foundation
 import SwiftUI
 
 @MainActor
 struct AdvancedSettingsView: View, ConfigBindable {
     @EnvironmentObject var configManager: ConfigManager
+
+    private let openClawDefaults = OpenClawConfig()
+    private let anomalyDefaults = AnomalyGuardConfig()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -12,40 +16,54 @@ struct AdvancedSettingsView: View, ConfigBindable {
             )
 
             Group {
-                SectionHeader(title: "OpenClaw CLI", description: "fix-my-claw 调用 OpenClaw 所用的命令、目录和参数。")
+                SectionHeader(
+                    title: "OpenClaw CLI",
+                    description: "这些字段会直接影响 fix-my-claw 如何找到 OpenClaw 和它的工作目录。改错后，health/status/logs 全都会失效。",
+                    actionTitle: "恢复默认字段",
+                    action: restoreOpenClawDefaults
+                )
 
                 TextFieldRow(
                     title: "OpenClaw 命令",
                     text: binding(
-                        default: "openclaw",
+                        default: openClawDefaults.command,
                         get: { $0.openclaw.command },
                         set: { $0.openclaw.command = $1 }
-                    )
+                    ),
+                    description: "默认值: `openclaw`。支持 PATH 里的命令名或绝对路径。",
+                    message: openClawCommandMessage?.text,
+                    messageTone: openClawCommandMessage?.tone ?? .info
                 )
 
                 TextFieldRow(
                     title: "OpenClaw 状态目录",
                     text: binding(
-                        default: "~/.openclaw",
+                        default: openClawDefaults.stateDir,
                         get: { $0.openclaw.stateDir },
                         set: { $0.openclaw.stateDir = $1 }
-                    )
+                    ),
+                    description: "默认值来源: fix-my-claw 内置 `OpenClawConfig.stateDir`。",
+                    message: stateDirectoryMessage?.text,
+                    messageTone: stateDirectoryMessage?.tone ?? .info
                 )
 
                 TextFieldRow(
                     title: "OpenClaw 工作目录",
                     text: binding(
-                        default: "~/.openclaw/workspace",
+                        default: openClawDefaults.workspaceDir,
                         get: { $0.openclaw.workspaceDir },
                         set: { $0.openclaw.workspaceDir = $1 }
-                    )
+                    ),
+                    description: "默认值来源: fix-my-claw 内置 `OpenClawConfig.workspaceDir`。",
+                    message: workspaceDirectoryMessage?.text,
+                    messageTone: workspaceDirectoryMessage?.tone ?? .info
                 )
 
                 LineListEditor(
                     title: "health_args",
-                    description: "每行一个参数。",
+                    description: "每行一个参数。默认值来源: fix-my-claw 内置 `OpenClawConfig.healthArgs`。",
                     text: lineListBinding(
-                        default: ["gateway", "health", "--json"],
+                        default: openClawDefaults.healthArgs,
                         get: { $0.openclaw.healthArgs },
                         set: { $0.openclaw.healthArgs = $1 }
                     )
@@ -53,9 +71,9 @@ struct AdvancedSettingsView: View, ConfigBindable {
 
                 LineListEditor(
                     title: "status_args",
-                    description: "每行一个参数。",
+                    description: "每行一个参数。默认值来源: fix-my-claw 内置 `OpenClawConfig.statusArgs`。",
                     text: lineListBinding(
-                        default: ["gateway", "status", "--json"],
+                        default: openClawDefaults.statusArgs,
                         get: { $0.openclaw.statusArgs },
                         set: { $0.openclaw.statusArgs = $1 }
                     )
@@ -63,9 +81,9 @@ struct AdvancedSettingsView: View, ConfigBindable {
 
                 LineListEditor(
                     title: "logs_args",
-                    description: "每行一个参数。",
+                    description: "每行一个参数。默认值来源: fix-my-claw 内置 `OpenClawConfig.logsArgs`。",
                     text: lineListBinding(
-                        default: ["logs", "--limit", "200", "--plain"],
+                        default: openClawDefaults.logsArgs,
                         get: { $0.openclaw.logsArgs },
                         set: { $0.openclaw.logsArgs = $1 }
                     )
@@ -241,7 +259,7 @@ struct AdvancedSettingsView: View, ConfigBindable {
             Divider()
 
             Group {
-                SectionHeader(title: "异常检测", description: "日志窗口、关键词和相似度阈值。")
+                SectionHeader(title: "异常检测", description: "阈值和窗口一般按默认即可；真正高风险的是下面的关键词列表。")
 
                 Toggle(
                     "启用异常检测",
@@ -431,46 +449,176 @@ struct AdvancedSettingsView: View, ConfigBindable {
                     range: 1...100
                 )
 
+                SectionHeader(
+                    title: "危险高级项：检测关键词",
+                    description: "这些关键词直接决定何时触发 stop/repeat/dispatch/architect 活动判断。清空或误配会显著降低检测准确率。",
+                    actionTitle: "恢复默认关键词",
+                    action: restoreAnomalyKeywordDefaults
+                )
+
                 LineListEditor(
                     title: "keywords_stop",
-                    description: "每行一个停机关键词。",
+                    description: "每行一个停机关键词。默认值来源: fix-my-claw 内置 `AnomalyGuardConfig.keywordsStop`。",
                     text: lineListBinding(
-                        default: [],
+                        default: anomalyDefaults.keywordsStop,
                         get: { $0.anomalyGuard.keywordsStop },
                         set: { $0.anomalyGuard.keywordsStop = $1 }
-                    )
+                    ),
+                    message: keywordValidationMessage(
+                        configManager.config?.anomalyGuard.keywordsStop ?? anomalyDefaults.keywordsStop,
+                        label: "stop 关键词"
+                    ),
+                    messageTone: .warning
                 )
 
                 LineListEditor(
                     title: "keywords_repeat",
-                    description: "每行一个重复/死循环关键词。",
+                    description: "每行一个重复/死循环关键词。默认值来源: fix-my-claw 内置 `AnomalyGuardConfig.keywordsRepeat`。",
                     text: lineListBinding(
-                        default: [],
+                        default: anomalyDefaults.keywordsRepeat,
                         get: { $0.anomalyGuard.keywordsRepeat },
                         set: { $0.anomalyGuard.keywordsRepeat = $1 }
-                    )
+                    ),
+                    message: keywordValidationMessage(
+                        configManager.config?.anomalyGuard.keywordsRepeat ?? anomalyDefaults.keywordsRepeat,
+                        label: "repeat 关键词"
+                    ),
+                    messageTone: .warning
                 )
 
                 LineListEditor(
                     title: "keywords_dispatch",
-                    description: "每行一个派发关键词。",
+                    description: "每行一个派发关键词。默认值来源: fix-my-claw 内置 `AnomalyGuardConfig.keywordsDispatch`。",
                     text: lineListBinding(
-                        default: [],
+                        default: anomalyDefaults.keywordsDispatch,
                         get: { $0.anomalyGuard.keywordsDispatch },
                         set: { $0.anomalyGuard.keywordsDispatch = $1 }
-                    )
+                    ),
+                    message: keywordValidationMessage(
+                        configManager.config?.anomalyGuard.keywordsDispatch ?? anomalyDefaults.keywordsDispatch,
+                        label: "dispatch 关键词"
+                    ),
+                    messageTone: .warning
                 )
 
                 LineListEditor(
                     title: "keywords_architect_active",
-                    description: "每行一个 Architect 仍在输出的检测关键词。",
+                    description: "每行一个 Architect 仍在输出的检测关键词。默认值来源: fix-my-claw 内置 `AnomalyGuardConfig.keywordsArchitectActive`。",
                     text: lineListBinding(
-                        default: [],
+                        default: anomalyDefaults.keywordsArchitectActive,
                         get: { $0.anomalyGuard.keywordsArchitectActive },
                         set: { $0.anomalyGuard.keywordsArchitectActive = $1 }
-                    )
+                    ),
+                    message: keywordValidationMessage(
+                        configManager.config?.anomalyGuard.keywordsArchitectActive ?? anomalyDefaults.keywordsArchitectActive,
+                        label: "architect_active 关键词"
+                    ),
+                    messageTone: .warning
                 )
             }
         }
+    }
+}
+
+private extension AdvancedSettingsView {
+    var openClawCommandMessage: (text: String, tone: FormMessageTone)? {
+        executableMessage(
+            for: configManager.config?.openclaw.command ?? openClawDefaults.command,
+            label: "OpenClaw 命令"
+        )
+    }
+
+    var stateDirectoryMessage: (text: String, tone: FormMessageTone)? {
+        directoryMessage(
+            for: configManager.config?.openclaw.stateDir ?? openClawDefaults.stateDir,
+            label: "OpenClaw 状态目录"
+        )
+    }
+
+    var workspaceDirectoryMessage: (text: String, tone: FormMessageTone)? {
+        directoryMessage(
+            for: configManager.config?.openclaw.workspaceDir ?? openClawDefaults.workspaceDir,
+            label: "OpenClaw 工作目录"
+        )
+    }
+
+    func restoreOpenClawDefaults() {
+        guard var config = configManager.config else { return }
+        config.openclaw = openClawDefaults
+        configManager.config = config
+    }
+
+    func restoreAnomalyKeywordDefaults() {
+        guard var config = configManager.config else { return }
+        config.anomalyGuard.keywordsStop = anomalyDefaults.keywordsStop
+        config.anomalyGuard.keywordsRepeat = anomalyDefaults.keywordsRepeat
+        config.anomalyGuard.keywordsDispatch = anomalyDefaults.keywordsDispatch
+        config.anomalyGuard.keywordsArchitectActive = anomalyDefaults.keywordsArchitectActive
+        configManager.config = config
+    }
+
+    func executableMessage(for command: String, label: String) -> (text: String, tone: FormMessageTone)? {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ("\(label) 不能为空。", .warning)
+        }
+
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        if trimmed.contains("/") {
+            let path = URL(fileURLWithPath: expanded).standardizedFileURL.path
+            return FileManager.default.isExecutableFile(atPath: path)
+                ? ("已解析到可执行路径: \(path)", .info)
+                : ("未找到可执行文件: \(path)", .warning)
+        }
+
+        let envPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        let searchPaths = envPath.split(separator: ":").map(String.init)
+        if let found = searchPaths
+            .map({ URL(fileURLWithPath: $0).appendingPathComponent(trimmed).path })
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return ("将在 PATH 中解析为: \(found)", .info)
+        }
+
+        return ("当前 PATH 中找不到 `\(trimmed)`，OpenClaw 探测与日志读取会直接失败。", .warning)
+    }
+
+    func directoryMessage(for rawPath: String, label: String) -> (text: String, tone: FormMessageTone)? {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ("\(label) 不能为空。", .warning)
+        }
+
+        if !trimmed.hasPrefix("/") && !trimmed.hasPrefix("~") {
+            return ("建议使用绝对路径或 `~` 开头的路径，避免相对路径受启动目录影响。", .warning)
+        }
+
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory)
+        if exists && isDirectory.boolValue {
+            return ("目录存在: \(expanded)", .info)
+        }
+        if exists {
+            return ("路径存在但不是目录: \(expanded)", .warning)
+        }
+        return ("目录当前不存在: \(expanded)。首次运行前确认 OpenClaw 会创建它。", .warning)
+    }
+
+    func keywordValidationMessage(_ items: [String], label: String) -> String? {
+        if items.isEmpty {
+            return "\(label) 为空时，对应异常模式几乎不会被文本关键词触发。"
+        }
+
+        let normalized = items.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        let uniqueCount = Set(normalized.filter { !$0.isEmpty }).count
+        if uniqueCount < items.count {
+            return "\(label) 存在重复项。重复关键词不会增强检测，只会增加维护负担。"
+        }
+
+        if uniqueCount < 2 {
+            return "\(label) 过少。至少保留 2 个以上关键词更稳妥。"
+        }
+
+        return nil
     }
 }

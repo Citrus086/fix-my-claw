@@ -1,18 +1,70 @@
 import SwiftUI
 
+enum FormMessageTone {
+    case info
+    case warning
+}
+
+struct FormMessage: View {
+    let text: String
+    let tone: FormMessageTone
+
+    private var tint: Color {
+        switch tone {
+        case .info:
+            return .secondary
+        case .warning:
+            return .orange
+        }
+    }
+
+    private var iconName: String {
+        switch tone {
+        case .info:
+            return "info.circle"
+        case .warning:
+            return "exclamationmark.triangle"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: iconName)
+                .font(.caption)
+                .foregroundColor(tint)
+                .padding(.top, 1)
+            Text(text)
+                .font(.caption)
+                .foregroundColor(tint)
+        }
+    }
+}
+
 // MARK: - Section Header
 
 struct SectionHeader: View {
     let title: String
     let description: String
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.headline)
-            Text(description)
-                .font(.caption)
-                .foregroundColor(.secondary)
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                Text(description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer(minLength: 12)
+
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
         }
     }
 }
@@ -22,14 +74,31 @@ struct SectionHeader: View {
 struct TextFieldRow: View {
     let title: String
     @Binding var text: String
+    var description: String? = nil
+    var message: String? = nil
+    var messageTone: FormMessageTone = .info
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(title)
-                .frame(width: 150, alignment: .leading)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title)
+                    .frame(width: 150, alignment: .leading)
 
-            TextField(title, text: $text)
-                .textFieldStyle(.roundedBorder)
+                TextField(title, text: $text)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            if let description, !description.isEmpty {
+                Text(description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 162)
+            }
+
+            if let message, !message.isEmpty {
+                FormMessage(text: message, tone: messageTone)
+                    .padding(.leading, 162)
+            }
         }
     }
 }
@@ -40,20 +109,37 @@ struct PickerRow: View {
     let title: String
     @Binding var selection: String
     let options: [String]
+    var description: String? = nil
+    var message: String? = nil
+    var messageTone: FormMessageTone = .info
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(title)
-                .frame(width: 150, alignment: .leading)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(title)
+                    .frame(width: 150, alignment: .leading)
 
-            Picker(title, selection: $selection) {
-                ForEach(options, id: \.self) { option in
-                    Text(option).tag(option)
+                Picker(title, selection: $selection) {
+                    ForEach(options, id: \.self) { option in
+                        Text(option).tag(option)
+                    }
                 }
-            }
-            .pickerStyle(.menu)
+                .pickerStyle(.menu)
 
-            Spacer()
+                Spacer()
+            }
+
+            if let description, !description.isEmpty {
+                Text(description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 162)
+            }
+
+            if let message, !message.isEmpty {
+                FormMessage(text: message, tone: messageTone)
+                    .padding(.leading, 162)
+            }
         }
     }
 }
@@ -140,6 +226,8 @@ struct MultilineTextField: View {
     let description: String
     @Binding var text: String
     let minHeight: CGFloat
+    var message: String? = nil
+    var messageTone: FormMessageTone = .info
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -157,6 +245,10 @@ struct MultilineTextField: View {
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
                 )
+
+            if let message, !message.isEmpty {
+                FormMessage(text: message, tone: messageTone)
+            }
         }
     }
 }
@@ -167,13 +259,17 @@ struct LineListEditor: View {
     let title: String
     let description: String
     @Binding var text: String
+    var message: String? = nil
+    var messageTone: FormMessageTone = .info
 
     var body: some View {
         MultilineTextField(
             title: title,
             description: description,
             text: $text,
-            minHeight: 110
+            minHeight: 110,
+            message: message,
+            messageTone: messageTone
         )
     }
 }
@@ -184,13 +280,17 @@ struct CommandListEditor: View {
     let title: String
     let description: String
     @Binding var text: String
+    var message: String? = nil
+    var messageTone: FormMessageTone = .info
 
     var body: some View {
         MultilineTextField(
             title: title,
             description: description,
             text: $text,
-            minHeight: 130
+            minHeight: 130,
+            message: message,
+            messageTone: messageTone
         )
     }
 }
