@@ -51,10 +51,12 @@ class MenuBarManager: ObservableObject {
     @Published var serviceStatus: ServiceStatus?
     @Published var currentRepairStage: String?
     @Published var pendingAiRequest: ApprovalRequest?
+    @Published var lastRepairPresentation: RepairPresentation?
 
     let cli = CLIWrapper()
 
     private var statusTimer: Timer?
+    private var checkTimer: Timer?
     private var approvalTimer: Timer?
     private var repairProgressTimer: Timer?
     private var lastCheckTime: Date?
@@ -64,12 +66,36 @@ class MenuBarManager: ObservableObject {
     private let approvalActiveFileName = "ai_approval.active.json"
     private let approvalDecisionFileName = "ai_approval.decision.json"
     private let repairProgressFileName = "repair_progress.json"
+    private let repairResultFileName = "repair_result.json"
+    private var lastHandledRepairFingerprint: String?
+
+    /// 是否已经执行过首次健康检查
+    private var hasPerformedInitialCheck = false
+
+    /// 计算有效的显示状态（综合考虑修复中/审批中/健康态）
+    var effectiveState: ServiceState {
+        // 优先显示修复中状态
+        if currentRepairStage != nil {
+            return .repairing
+        }
+        // 其次显示审批中状态
+        if pendingAiRequest != nil {
+            return .awaitingApproval
+        }
+        return state
+    }
 
     var statusTitle: String {
+        // 修复中：显示阶段信息
         if let stage = currentRepairStage {
-            return "🟡 修复中...(\(stage))"
+            let localizedStage = localizedStageName(stage)
+            return "🔧 修复中...(\(localizedStage))"
         }
-        return "\(state.icon) \(state.description)"
+        // 审批中
+        if pendingAiRequest != nil {
+            return "❓ 等待 AI 审批..."
+        }
+        return "\(effectiveState.icon) \(effectiveState.description)"
     }
 
     var lastCheckText: String? {
@@ -82,9 +108,30 @@ class MenuBarManager: ObservableObject {
     func start() {
         Task {
             await initialSetup()
-            await refreshStatus()
+            // 启动时主动做一次真实健康检查，而不是乐观假设
+            await performInitialHealthCheck()
             startPolling()
         }
+    }
+
+    /// 启动时的首次健康检查
+    private func performInitialHealthCheck() async {
+        // 如果没有配置文件，跳过健康检查
+        guard ConfigManager.shared.configExists else {
+            state = .noConfig
+            return
+        }
+
+        do {
+            try await refreshHealthSnapshot(notifyOnChange: false)
+        } catch {
+            // 健康检查失败，记录错误但不阻止启动
+            lastError = "首次健康检查失败: \(error.localizedDescription)"
+            // 保持 unknown 状态，不乐观假设健康
+        }
+
+        await refreshStatus()
+        await syncPersistedRepairResult(notifyIfNew: false)
     }
 
     private var hasShownWelcome: Bool {
@@ -112,10 +159,37 @@ class MenuBarManager: ObservableObject {
         }
 
         await refreshServiceStatus()
+        await syncPersistedRepairResult(notifyIfNew: false)
         if !hasShownWelcome, serviceStatus?.installed == false {
             hasShownWelcome = true
             showWelcomeDialog()
         }
+    }
+
+    private func refreshHealthSnapshot(notifyOnChange: Bool) async throws {
+        let previousHealthy = lastCheckResult?.healthy
+        let result = try await cli.check()
+        lastCheckResult = result
+        lastCheckTime = Date()
+        hasPerformedInitialCheck = true
+
+        if notifyOnChange, let previousHealthy, previousHealthy != result.healthy {
+            sendStateChangeNotification(healthy: result.healthy, reason: result.reason)
+        }
+    }
+
+    private func refreshPostRepairState() async {
+        guard ConfigManager.shared.configExists else {
+            await refreshStatus()
+            return
+        }
+
+        do {
+            try await refreshHealthSnapshot(notifyOnChange: false)
+        } catch {
+            print("[GUI] 修复结束后刷新健康状态失败: \(error.localizedDescription)")
+        }
+        await refreshStatus()
     }
 
     func toggleMonitoring() {
@@ -143,18 +217,10 @@ class MenuBarManager: ObservableObject {
 
         Task {
             isLoading = true
-            let previousState = state
             state = .checking
 
             do {
-                let result = try await cli.check()
-                lastCheckResult = result
-                lastCheckTime = Date()
-
-                if previousState.isHealthy != result.healthy {
-                    sendStateChangeNotification(healthy: result.healthy, reason: result.reason)
-                }
-
+                try await refreshHealthSnapshot(notifyOnChange: true)
                 await refreshStatus()
             } catch {
                 lastError = error.localizedDescription
@@ -193,8 +259,8 @@ class MenuBarManager: ObservableObject {
                     try? await cli.startService()
                 }
 
-                await refreshStatus()
-                sendRepairNotification(result: result)
+                await refreshPostRepairState()
+                await handleRepairResult(result, source: .manual, notifyIfNew: true)
             } catch {
                 lastError = "修复失败: \(error.localizedDescription)"
                 // 确保服务被重新启动（如果之前是运行中的）
@@ -321,7 +387,17 @@ class MenuBarManager: ObservableObject {
             }
 
             let isEnabled = status.enabled
-            let isHealthy = lastCheckResult?.healthy ?? true
+
+            // 关键修复：不再乐观假设健康
+            // 如果没有真实的健康检查结果，保持 unknown 状态
+            guard let checkResult = lastCheckResult else {
+                // 尚未进行过健康检查，保持 unknown
+                // 注意：即使监控启用，我们也需要先验证健康状态
+                state = .unknown
+                return
+            }
+
+            let isHealthy = checkResult.healthy
 
             switch (isEnabled, isHealthy) {
             case (true, true): state = .healthy
@@ -335,14 +411,36 @@ class MenuBarManager: ObservableObject {
     }
 
     private func startPolling() {
+        // 快速轮询：服务状态（30秒）
         statusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { await self?.refreshStatus() }
         }
+        // 低频轮询：真实健康检查（5分钟）
+        // 确保即使监控服务运行，GUI 也能定期验证健康状态
+        checkTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            Task { await self?.periodicHealthCheck() }
+        }
+        // 高频轮询：修复进度（1秒）
+        repairProgressTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { await self?.pollRepairProgress() }
+        }
+        // 中频轮询：AI 审批（2秒）
         approvalTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { await self?.pollApprovalRequest() }
         }
-        repairProgressTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { await self?.pollRepairProgress() }
+    }
+
+    /// 周期性健康检查（低频）
+    private func periodicHealthCheck() async {
+        guard !isLoading else { return }
+        guard ConfigManager.shared.configExists else { return }
+
+        do {
+            try await refreshHealthSnapshot(notifyOnChange: true)
+            await refreshStatus()
+        } catch {
+            // 静默失败，不干扰用户
+            print("[GUI] 周期性健康检查失败: \(error.localizedDescription)")
         }
     }
 
@@ -385,82 +483,65 @@ class MenuBarManager: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
 
-    private func sendRepairNotification(result: RepairResult) {
-        let content = UNMutableNotificationContent()
-        if result.fixed {
-            content.title = "✅ 修复完成"
-            content.body = "OpenClaw 已成功修复"
-        } else if result.attempted {
-            content.title = "⚠️ 修复未成功"
-            content.body = "已尝试修复但问题仍存在，建议人工介入"
-        } else {
-            content.title = "⏸️ 修复跳过"
-            if let cooldown = result.details.cooldownRemainingSeconds {
-                content.body = "冷却期中，剩余 \(cooldown) 秒"
-            } else if result.details.alreadyHealthy == true {
-                content.body = "系统已处于健康状态"
-            } else {
-                content.body = "不满足修复条件"
-            }
+    private func handleRepairResult(_ result: RepairResult, source: RepairResultSource, notifyIfNew: Bool) async {
+        let presentation = result.makePresentation(source: source)
+        let isNew = presentation.fingerprint != lastHandledRepairFingerprint
+
+        if isNew || lastRepairPresentation == nil {
+            lastRepairPresentation = presentation
+            lastHandledRepairFingerprint = presentation.fingerprint
         }
 
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        Task {
-            try? await UNUserNotificationCenter.current().add(request)
+        if notifyIfNew, isNew {
+            await deliverRepairNotification(presentation)
         }
     }
 
-    // MARK: - Repair Progress Polling
+    private func deliverRepairNotification(_ presentation: RepairPresentation) async {
+        let content = UNMutableNotificationContent()
+        content.title = presentation.title
+        content.body = presentation.body
+        content.sound = .default
 
-    // 记录已发送过完成通知的阶段，避免重复发送
-    private var notifiedCompletionStages = Set<String>()
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    private func loadRepairResult() -> PersistedRepairResult? {
+        let url = approvalStateDirectoryURL().appendingPathComponent(repairResultFileName)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(PersistedRepairResult.self, from: data)
+    }
+
+    private func syncPersistedRepairResult(notifyIfNew: Bool) async {
+        guard let persisted = loadRepairResult() else { return }
+        await handleRepairResult(persisted.result, source: .background, notifyIfNew: notifyIfNew)
+    }
+
+    // MARK: - Repair Progress Polling
 
     private func pollRepairProgress() async {
         guard let progress = loadRepairProgress() else {
             // 进度文件被删除表示整个修复流程已结束（后端调用了 clear_repair_progress）
             if currentRepairStage != nil {
+                guard !isLoading else { return }
                 currentRepairStage = nil
-                // 清除已发送通知记录
-                notifiedCompletionStages.removeAll()
+                await refreshPostRepairState()
+                await syncPersistedRepairResult(notifyIfNew: true)
+            } else if lastRepairPresentation == nil {
+                await syncPersistedRepairResult(notifyIfNew: false)
             }
             return
         }
 
         // 更新当前修复阶段显示
         currentRepairStage = progress.stage
-
-        // 注意：后端在多个中间阶段会写 completed（如 pause、ai_decision、official 等）
-        // 只有进度文件被删除时才表示整个修复结束
-        // 这里我们只在阶段失败时发送通知，成功阶段的通知由 performRepair 统一处理
-        if progress.status == "failed" {
-            // 避免对同一阶段重复发送通知
-            let stageKey = "\(progress.stage):\(progress.status)"
-            if !notifiedCompletionStages.contains(stageKey) {
-                notifiedCompletionStages.insert(stageKey)
-                await sendRepairCompletedNotification(stage: progress.stage, success: false)
-            }
-        }
     }
 
     private func loadRepairProgress() -> RepairProgress? {
         let url = approvalStateDirectoryURL().appendingPathComponent(repairProgressFileName)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(RepairProgress.self, from: data)
-    }
-
-    private func sendRepairCompletedNotification(stage: String, success: Bool) async {
-        let content = UNMutableNotificationContent()
-        if success {
-            content.title = "✅ 修复完成"
-            content.body = "系统修复成功（阶段：\(stage)）"
-        } else {
-            content.title = "⚠️ 修复未成功"
-            content.body = "系统修复失败，请人工介入（阶段：\(stage)）"
-        }
-        content.sound = .default
-
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        try? await UNUserNotificationCenter.current().add(request)
     }
 
     // MARK: - AI Approval Coordination
@@ -697,6 +778,42 @@ extension MenuBarManager {
             menu.addItem(serviceItem)
         }
 
+        if let currentRepairStage {
+            let stageItem = NSMenuItem(
+                title: "当前阶段: \(localizedStageName(currentRepairStage))",
+                action: nil,
+                keyEquivalent: ""
+            )
+            stageItem.isEnabled = false
+            menu.addItem(stageItem)
+        }
+
+        if let lastRepairPresentation {
+            let summaryItem = NSMenuItem(
+                title: "最近\(lastRepairPresentation.source.label): \(lastRepairPresentation.menuSummary)",
+                action: nil,
+                keyEquivalent: ""
+            )
+            summaryItem.isEnabled = false
+            menu.addItem(summaryItem)
+
+            let bodyItem = NSMenuItem(title: lastRepairPresentation.body, action: nil, keyEquivalent: "")
+            bodyItem.isEnabled = false
+            menu.addItem(bodyItem)
+
+            if let menuDetail = lastRepairPresentation.menuDetail {
+                let detailItem = NSMenuItem(title: menuDetail, action: nil, keyEquivalent: "")
+                detailItem.isEnabled = false
+                menu.addItem(detailItem)
+            }
+
+            if let attemptLabel = lastRepairPresentation.attemptLabel {
+                let attemptItem = NSMenuItem(title: "尝试目录: \(attemptLabel)", action: nil, keyEquivalent: "")
+                attemptItem.isEnabled = false
+                menu.addItem(attemptItem)
+            }
+        }
+
         // 如果有待处理的 AI 请求，显示确认菜单项
         if let _ = pendingAiRequest {
             let aiApprovalItem = NSMenuItem(
@@ -774,6 +891,16 @@ extension MenuBarManager {
             let loadingItem = NSMenuItem(title: "⏳ 获取中...", action: nil, keyEquivalent: "")
             loadingItem.isEnabled = false
             menu.addItem(loadingItem)
+
+        case .repairing:
+            let repairingItem = NSMenuItem(title: "🔧 修复中...", action: nil, keyEquivalent: "")
+            repairingItem.isEnabled = false
+            menu.addItem(repairingItem)
+
+        case .awaitingApproval:
+            let approvalItem = NSMenuItem(title: "❓ 等待 AI 审批...", action: nil, keyEquivalent: "")
+            approvalItem.isEnabled = false
+            menu.addItem(approvalItem)
         }
 
         let checkItem = NSMenuItem(

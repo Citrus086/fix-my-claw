@@ -2,6 +2,11 @@ import AppKit
 import Foundation
 import SwiftUI
 
+private struct RawConfigSnapshot {
+    let payload: [String: Any]
+    let config: AppConfig
+}
+
 @MainActor
 class ConfigManager: ObservableObject {
     static let shared = ConfigManager()
@@ -13,6 +18,8 @@ class ConfigManager: ObservableObject {
     @Published var isLoading = false
     @Published var lastError: String?
     @Published var saveError: String?
+
+    private var rawConfigPayload: [String: Any] = [:]
 
     init() {
         defaultConfigPath = FileManager.default.homeDirectoryForCurrentUser
@@ -30,8 +37,11 @@ class ConfigManager: ObservableObject {
             defer { isLoading = false }
 
             do {
-                config = try await cli.getConfig(configPath: defaultConfigPath)
+                let snapshot = try await fetchConfigSnapshot()
+                rawConfigPayload = snapshot.payload
+                config = snapshot.config
                 lastError = nil
+                saveError = nil
             } catch {
                 lastError = "加载配置失败: \(error.localizedDescription)"
             }
@@ -45,7 +55,13 @@ class ConfigManager: ObservableObject {
             defer { isLoading = false }
 
             do {
-                try await cli.setConfig(config, configPath: defaultConfigPath)
+                let mergedPayload = try mergedPayload(with: config)
+                let jsonData = try Self.serializeJSON(mergedPayload)
+                _ = try await runConfigCommand(args: configCommandArgs(subcommand: ["config", "set", "--json"]), input: jsonData)
+
+                let snapshot = try await fetchConfigSnapshot()
+                rawConfigPayload = snapshot.payload
+                self.config = snapshot.config
                 saveError = nil
                 lastError = nil
             } catch {
@@ -68,10 +84,105 @@ class ConfigManager: ObservableObject {
                 _ = try await cli.initializeConfig(at: defaultConfigPath, force: true)
                 lastError = nil
                 saveError = nil
-                config = try await cli.getConfig(configPath: defaultConfigPath)
+                let snapshot = try await fetchConfigSnapshot()
+                rawConfigPayload = snapshot.payload
+                config = snapshot.config
             } catch {
                 lastError = "重置配置失败: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func fetchConfigSnapshot() async throws -> RawConfigSnapshot {
+        let stdout = try await runConfigCommand(args: configCommandArgs(subcommand: ["config", "show", "--json"]))
+        let payload = try Self.decodeJSONObject(from: stdout)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: stdout)
+        return RawConfigSnapshot(payload: payload, config: decoded)
+    }
+
+    private func mergedPayload(with config: AppConfig) throws -> [String: Any] {
+        let modelData = try JSONEncoder().encode(config)
+        let modelPayload = try Self.decodeJSONObject(from: modelData)
+        return Self.deepMerge(base: rawConfigPayload, overrides: modelPayload)
+    }
+
+    private func configCommandArgs(subcommand: [String]) -> [String] {
+        subcommand + ["--config", defaultConfigPath]
+    }
+
+    private func runConfigCommand(args: [String], input: Data? = nil) async throws -> Data {
+        let binaryPath = cli.binaryPath
+        return try await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [binaryPath] + args
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            let stdinPipe = Pipe()
+            if input != nil {
+                process.standardInput = stdinPipe
+            }
+
+            do {
+                try process.run()
+            } catch {
+                throw CLIError.commandNotFound(path: binaryPath)
+            }
+
+            if let input {
+                stdinPipe.fileHandleForWriting.write(input)
+                stdinPipe.fileHandleForWriting.closeFile()
+            }
+
+            process.waitUntilExit()
+
+            let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderr = String(
+                data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            guard process.terminationStatus == 0 else {
+                throw CLIError.commandFailed(
+                    exitCode: process.terminationStatus,
+                    stderr: stderr.isEmpty ? "未知错误" : stderr
+                )
+            }
+
+            return stdout
+        }.value
+    }
+
+    private static func decodeJSONObject(from data: Data) throws -> [String: Any] {
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let payload = object as? [String: Any] else {
+            throw CLIError.decodingFailed(NSError(
+                domain: "FixMyClawGUI.ConfigManager",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "配置 JSON 顶层不是对象"]
+            ))
+        }
+        return payload
+    }
+
+    private static func serializeJSON(_ payload: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    private static func deepMerge(base: [String: Any], overrides: [String: Any]) -> [String: Any] {
+        var merged = base
+        for (key, overrideValue) in overrides {
+            if let overrideDict = overrideValue as? [String: Any],
+               let baseDict = merged[key] as? [String: Any] {
+                merged[key] = deepMerge(base: baseDict, overrides: overrideDict)
+            } else {
+                merged[key] = overrideValue
+            }
+        }
+        return merged
     }
 }

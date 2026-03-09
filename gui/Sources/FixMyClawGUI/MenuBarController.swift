@@ -42,7 +42,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     private func updateStatusItem() {
         guard let statusItem else { return }
-        statusItem.button?.title = manager.state.icon
+        // 使用 effectiveState 让菜单栏图标真正反映修复中/审批中状态
+        statusItem.button?.title = manager.effectiveState.icon
         statusItem.button?.toolTip = manager.statusTitle
         statusItem.menu = manager.buildMenu()
     }

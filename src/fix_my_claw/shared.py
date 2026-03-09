@@ -18,6 +18,7 @@ _SECRET_PATTERNS = [
 
 _AI_APPROVAL_ACTIVE_NAME = "ai_approval.active.json"
 _AI_APPROVAL_DECISION_NAME = "ai_approval.decision.json"
+_REPAIR_RESULT_NAME = "repair_result.json"
 
 
 def _expand_path(value: str) -> str:
@@ -197,6 +198,10 @@ def _repair_progress_path(state_dir: Path) -> Path:
     return state_dir / "repair_progress.json"
 
 
+def _repair_result_path(state_dir: Path) -> Path:
+    return state_dir / _REPAIR_RESULT_NAME
+
+
 def write_repair_progress(
     state_dir: Path,
     *,
@@ -221,6 +226,34 @@ def write_repair_progress(
 def clear_repair_progress(state_dir: Path) -> None:
     """清理修复进度文件"""
     _repair_progress_path(state_dir).unlink(missing_ok=True)
+
+
+def write_repair_result(
+    state_dir: Path,
+    *,
+    result: dict[str, Any],
+    timestamp: float | None = None,
+) -> None:
+    """写入最近一次修复结果，供 GUI 在修复结束后读取最终状态。"""
+    def _coerce_json_safe(value: Any) -> Any:
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, dict):
+            return {str(key): _coerce_json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_coerce_json_safe(item) for item in value]
+        return str(value)
+
+    payload = {
+        "timestamp": timestamp or time.time(),
+        "result": _coerce_json_safe(result),
+    }
+    _write_json_file(_repair_result_path(state_dir), payload)
+
+
+def clear_repair_result(state_dir: Path) -> None:
+    """清理最近一次修复结果快照。"""
+    _repair_result_path(state_dir).unlink(missing_ok=True)
 
 
 def setup_logging(cfg: "AppConfig") -> None:

@@ -97,7 +97,7 @@
 - 只删除本次新增文档
 
 ### Step 1: 运行态状态感知修复
-状态: pending
+状态: done
 前置依赖: Step 0
 
 目标:
@@ -138,7 +138,7 @@
 - 恢复 GUI runtime 文件到当前基线
 
 ### Step 2: 修复结果与进度展示对齐
-状态: pending
+状态: done
 前置依赖: Step 1
 
 目标:
@@ -188,7 +188,7 @@
 - 恢复 repair result 相关 Swift 文件到基线
 
 ### Step 3: 设置页 schema 覆盖补齐
-状态: pending
+状态: done
 前置依赖: Step 0
 
 目标:
@@ -247,7 +247,7 @@
 - 恢复设置页与配置管理 Swift 文件到基线
 
 ### Step 4: 默认值与解码韧性收敛
-状态: pending
+状态: in_progress
 前置依赖: Step 3
 
 目标:

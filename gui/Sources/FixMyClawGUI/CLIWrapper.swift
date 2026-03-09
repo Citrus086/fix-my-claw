@@ -303,6 +303,11 @@ struct RepairResult: Codable {
     }
 }
 
+struct PersistedRepairResult: Codable {
+    let timestamp: Double
+    let result: RepairResult
+}
+
 struct RepairDetails: Codable {
     let attemptDir: String?
     let reason: String?
@@ -310,6 +315,12 @@ struct RepairDetails: Codable {
     let repairDisabled: Bool?
     let cooldown: Bool?
     let cooldownRemainingSeconds: Int?
+    let pauseWaitSeconds: Int?
+    let aiDecision: RepairAiDecision?
+    let aiStage: String?
+    let officialBreakReason: String?
+    let backupBeforeAiError: String?
+    let notifyFinal: RepairNotificationPayload?
     
     enum CodingKeys: String, CodingKey {
         case attemptDir = "attempt_dir"
@@ -318,5 +329,53 @@ struct RepairDetails: Codable {
         case repairDisabled = "repair_disabled"
         case cooldown
         case cooldownRemainingSeconds = "cooldown_remaining_seconds"
+        case pauseWaitSeconds = "pause_wait_seconds"
+        case aiDecision = "ai_decision"
+        case aiStage = "ai_stage"
+        case officialBreakReason = "official_break_reason"
+        case backupBeforeAiError = "backup_before_ai_error"
+        case notifyFinal = "notify_final"
+    }
+}
+
+struct RepairAiDecision: Codable {
+    let asked: Bool?
+    let decision: String
+    let source: String?
+    let error: String?
+    let invalidReplies: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case asked
+        case decision
+        case source
+        case error
+        case invalidReplies = "invalid_replies"
+    }
+}
+
+struct RepairNotificationPayload: Codable {
+    let sent: Bool?
+    let messageId: String?
+    let exitCode: Int?
+    let argv: [String]?
+    let stderr: String?
+    let stdout: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sent
+        case messageId = "message_id"
+        case exitCode = "exit_code"
+        case argv
+        case stderr
+        case stdout
+    }
+
+    var messageText: String? {
+        guard let argv else { return nil }
+        guard let messageFlagIndex = argv.firstIndex(of: "--message") else { return nil }
+        let messageIndex = argv.index(after: messageFlagIndex)
+        guard messageIndex < argv.endIndex else { return nil }
+        return argv[messageIndex]
     }
 }

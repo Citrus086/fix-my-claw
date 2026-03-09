@@ -25,6 +25,7 @@ from .repair_types import (
     SessionStageData,
     StageResult,
 )
+from .shared import clear_repair_result, write_repair_result
 from .state import StateStore
 
 
@@ -150,10 +151,15 @@ class RepairStateMachine:
         return self.hooks.stages
 
     def run(self) -> RepairResult:
+        clear_repair_result(self.cfg.monitor.state_dir)
         while self.state is not RepairMachineState.DONE:
             self.state = self._advance()
         if self.terminal_result is None:
             raise RuntimeError("repair state machine reached DONE without a result")
+        write_repair_result(
+            self.cfg.monitor.state_dir,
+            result=self.terminal_result.to_json(),
+        )
         return self.terminal_result
 
     def _advance(self) -> RepairMachineState:
