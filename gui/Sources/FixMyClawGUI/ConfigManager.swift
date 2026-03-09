@@ -102,9 +102,7 @@ class ConfigManager: ObservableObject {
     }
 
     private func mergedPayload(with config: AppConfig) throws -> [String: Any] {
-        let modelData = try JSONEncoder().encode(config)
-        let modelPayload = try Self.decodeJSONObject(from: modelData)
-        return Self.deepMerge(base: rawConfigPayload, overrides: modelPayload)
+        try Self.mergePayloadPreservingUnknownFields(basePayload: rawConfigPayload, modelConfig: config)
     }
 
     private func configCommandArgs(subcommand: [String]) -> [String] {
@@ -158,7 +156,7 @@ class ConfigManager: ObservableObject {
         }.value
     }
 
-    private static func decodeJSONObject(from data: Data) throws -> [String: Any] {
+    nonisolated private static func decodeJSONObject(from data: Data) throws -> [String: Any] {
         let object = try JSONSerialization.jsonObject(with: data)
         guard let payload = object as? [String: Any] else {
             throw CLIError.decodingFailed(NSError(
@@ -170,11 +168,20 @@ class ConfigManager: ObservableObject {
         return payload
     }
 
-    private static func serializeJSON(_ payload: [String: Any]) throws -> Data {
+    nonisolated static func serializeJSON(_ payload: [String: Any]) throws -> Data {
         try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
     }
 
-    private static func deepMerge(base: [String: Any], overrides: [String: Any]) -> [String: Any] {
+    nonisolated static func mergePayloadPreservingUnknownFields(
+        basePayload: [String: Any],
+        modelConfig: AppConfig
+    ) throws -> [String: Any] {
+        let modelData = try JSONEncoder().encode(modelConfig)
+        let modelPayload = try decodeJSONObject(from: modelData)
+        return deepMerge(base: basePayload, overrides: modelPayload)
+    }
+
+    nonisolated static func deepMerge(base: [String: Any], overrides: [String: Any]) -> [String: Any] {
         var merged = base
         for (key, overrideValue) in overrides {
             if let overrideDict = overrideValue as? [String: Any],

@@ -141,6 +141,8 @@ struct AppConfig: Codable {
         case agentRoles = "agent_roles"
     }
 
+    init() {}
+
     // 自定义解码器，增强对缺失 section 的韧性
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -151,6 +153,16 @@ struct AppConfig: Codable {
         notify = try container.decodeIfPresent(NotifyConfig.self, forKey: .notify) ?? NotifyConfig()
         ai = try container.decodeIfPresent(AiConfig.self, forKey: .ai) ?? AiConfig()
         agentRoles = try container.decodeIfPresent(AgentRolesConfig.self, forKey: .agentRoles) ?? AgentRolesConfig()
+    }
+}
+
+private extension KeyedDecodingContainer {
+    func decodeOrDefault<T: Decodable>(
+        _ type: T.Type,
+        forKey key: Key,
+        default defaultValue: @autoclosure () -> T
+    ) throws -> T {
+        try decodeIfPresent(type, forKey: key) ?? defaultValue()
     }
 }
 
@@ -389,6 +401,135 @@ struct AiConfig: Codable {
     }
 }
 
+extension AgentRolesConfig {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        orchestrator = try container.decodeOrDefault([String].self, forKey: .orchestrator, default: defaults.orchestrator)
+        builder = try container.decodeOrDefault([String].self, forKey: .builder, default: defaults.builder)
+        architect = try container.decodeOrDefault([String].self, forKey: .architect, default: defaults.architect)
+        research = try container.decodeOrDefault([String].self, forKey: .research, default: defaults.research)
+    }
+}
+
+extension MonitorConfig {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        intervalSeconds = try container.decodeOrDefault(Int.self, forKey: .intervalSeconds, default: defaults.intervalSeconds)
+        probeTimeoutSeconds = try container.decodeOrDefault(Int.self, forKey: .probeTimeoutSeconds, default: defaults.probeTimeoutSeconds)
+        repairCooldownSeconds = try container.decodeOrDefault(Int.self, forKey: .repairCooldownSeconds, default: defaults.repairCooldownSeconds)
+        stateDir = try container.decodeOrDefault(String.self, forKey: .stateDir, default: defaults.stateDir)
+        logFile = try container.decodeOrDefault(String.self, forKey: .logFile, default: defaults.logFile)
+        logLevel = try container.decodeOrDefault(String.self, forKey: .logLevel, default: defaults.logLevel)
+        logMaxBytes = try container.decodeOrDefault(Int.self, forKey: .logMaxBytes, default: defaults.logMaxBytes)
+        logBackupCount = try container.decodeOrDefault(Int.self, forKey: .logBackupCount, default: defaults.logBackupCount)
+        logRetentionDays = try container.decodeOrDefault(Int.self, forKey: .logRetentionDays, default: defaults.logRetentionDays)
+    }
+}
+
+extension OpenClawConfig {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        command = try container.decodeOrDefault(String.self, forKey: .command, default: defaults.command)
+        stateDir = try container.decodeOrDefault(String.self, forKey: .stateDir, default: defaults.stateDir)
+        workspaceDir = try container.decodeOrDefault(String.self, forKey: .workspaceDir, default: defaults.workspaceDir)
+        healthArgs = try container.decodeOrDefault([String].self, forKey: .healthArgs, default: defaults.healthArgs)
+        statusArgs = try container.decodeOrDefault([String].self, forKey: .statusArgs, default: defaults.statusArgs)
+        logsArgs = try container.decodeOrDefault([String].self, forKey: .logsArgs, default: defaults.logsArgs)
+    }
+}
+
+extension RepairConfig {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        enabled = try container.decodeOrDefault(Bool.self, forKey: .enabled, default: defaults.enabled)
+        sessionControlEnabled = try container.decodeOrDefault(Bool.self, forKey: .sessionControlEnabled, default: defaults.sessionControlEnabled)
+        sessionActiveMinutes = try container.decodeOrDefault(Int.self, forKey: .sessionActiveMinutes, default: defaults.sessionActiveMinutes)
+        sessionAgents = try container.decodeOrDefault([String].self, forKey: .sessionAgents, default: defaults.sessionAgents)
+        softPauseEnabled = try container.decodeOrDefault(Bool.self, forKey: .softPauseEnabled, default: defaults.softPauseEnabled)
+        pauseMessage = try container.decodeOrDefault(String.self, forKey: .pauseMessage, default: defaults.pauseMessage)
+        pauseWaitSeconds = try container.decodeOrDefault(Int.self, forKey: .pauseWaitSeconds, default: defaults.pauseWaitSeconds)
+        terminateMessage = try container.decodeOrDefault(String.self, forKey: .terminateMessage, default: defaults.terminateMessage)
+        newMessage = try container.decodeOrDefault(String.self, forKey: .newMessage, default: defaults.newMessage)
+        sessionCommandTimeoutSeconds = try container.decodeOrDefault(Int.self, forKey: .sessionCommandTimeoutSeconds, default: defaults.sessionCommandTimeoutSeconds)
+        sessionStageWaitSeconds = try container.decodeOrDefault(Int.self, forKey: .sessionStageWaitSeconds, default: defaults.sessionStageWaitSeconds)
+        officialSteps = try container.decodeOrDefault([[String]].self, forKey: .officialSteps, default: defaults.officialSteps)
+        stepTimeoutSeconds = try container.decodeOrDefault(Int.self, forKey: .stepTimeoutSeconds, default: defaults.stepTimeoutSeconds)
+        postStepWaitSeconds = try container.decodeOrDefault(Int.self, forKey: .postStepWaitSeconds, default: defaults.postStepWaitSeconds)
+    }
+}
+
+extension AnomalyGuardConfig {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        enabled = try container.decodeOrDefault(Bool.self, forKey: .enabled, default: defaults.enabled)
+        windowLines = try container.decodeOrDefault(Int.self, forKey: .windowLines, default: defaults.windowLines)
+        probeTimeoutSeconds = try container.decodeOrDefault(Int.self, forKey: .probeTimeoutSeconds, default: defaults.probeTimeoutSeconds)
+        keywordsStop = try container.decodeOrDefault([String].self, forKey: .keywordsStop, default: defaults.keywordsStop)
+        keywordsRepeat = try container.decodeOrDefault([String].self, forKey: .keywordsRepeat, default: defaults.keywordsRepeat)
+        maxRepeatSameSignature = try container.decodeOrDefault(Int.self, forKey: .maxRepeatSameSignature, default: defaults.maxRepeatSameSignature)
+        minCycleRepeatedTurns = try container.decodeOrDefault(Int.self, forKey: .minCycleRepeatedTurns, default: defaults.minCycleRepeatedTurns)
+        maxCyclePeriod = try container.decodeOrDefault(Int.self, forKey: .maxCyclePeriod, default: defaults.maxCyclePeriod)
+        stagnationEnabled = try container.decodeOrDefault(Bool.self, forKey: .stagnationEnabled, default: defaults.stagnationEnabled)
+        stagnationMinEvents = try container.decodeOrDefault(Int.self, forKey: .stagnationMinEvents, default: defaults.stagnationMinEvents)
+        stagnationMinRoles = try container.decodeOrDefault(Int.self, forKey: .stagnationMinRoles, default: defaults.stagnationMinRoles)
+        stagnationMaxNovelClusterRatio = try container.decodeOrDefault(Double.self, forKey: .stagnationMaxNovelClusterRatio, default: defaults.stagnationMaxNovelClusterRatio)
+        minSignatureChars = try container.decodeOrDefault(Int.self, forKey: .minSignatureChars, default: defaults.minSignatureChars)
+        autoDispatchCheck = try container.decodeOrDefault(Bool.self, forKey: .autoDispatchCheck, default: defaults.autoDispatchCheck)
+        dispatchWindowLines = try container.decodeOrDefault(Int.self, forKey: .dispatchWindowLines, default: defaults.dispatchWindowLines)
+        keywordsDispatch = try container.decodeOrDefault([String].self, forKey: .keywordsDispatch, default: defaults.keywordsDispatch)
+        minPostDispatchUnexpectedTurns = try container.decodeOrDefault(Int.self, forKey: .minPostDispatchUnexpectedTurns, default: defaults.minPostDispatchUnexpectedTurns)
+        keywordsArchitectActive = try container.decodeOrDefault([String].self, forKey: .keywordsArchitectActive, default: defaults.keywordsArchitectActive)
+        similarityEnabled = try container.decodeOrDefault(Bool.self, forKey: .similarityEnabled, default: defaults.similarityEnabled)
+        similarityThreshold = try container.decodeOrDefault(Double.self, forKey: .similarityThreshold, default: defaults.similarityThreshold)
+        similarityMinChars = try container.decodeOrDefault(Int.self, forKey: .similarityMinChars, default: defaults.similarityMinChars)
+        maxSimilarRepeat = try container.decodeOrDefault(Int.self, forKey: .maxSimilarRepeat, default: defaults.maxSimilarRepeat)
+    }
+}
+
+extension NotifyConfig {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        channel = try container.decodeOrDefault(String.self, forKey: .channel, default: defaults.channel)
+        account = try container.decodeOrDefault(String.self, forKey: .account, default: defaults.account)
+        target = try container.decodeOrDefault(String.self, forKey: .target, default: defaults.target)
+        silent = try container.decodeOrDefault(Bool.self, forKey: .silent, default: defaults.silent)
+        sendTimeoutSeconds = try container.decodeOrDefault(Int.self, forKey: .sendTimeoutSeconds, default: defaults.sendTimeoutSeconds)
+        readTimeoutSeconds = try container.decodeOrDefault(Int.self, forKey: .readTimeoutSeconds, default: defaults.readTimeoutSeconds)
+        askEnableAi = try container.decodeOrDefault(Bool.self, forKey: .askEnableAi, default: defaults.askEnableAi)
+        askTimeoutSeconds = try container.decodeOrDefault(Int.self, forKey: .askTimeoutSeconds, default: defaults.askTimeoutSeconds)
+        pollIntervalSeconds = try container.decodeOrDefault(Int.self, forKey: .pollIntervalSeconds, default: defaults.pollIntervalSeconds)
+        readLimit = try container.decodeOrDefault(Int.self, forKey: .readLimit, default: defaults.readLimit)
+        level = try container.decodeOrDefault(String.self, forKey: .level, default: defaults.level)
+        operatorUserIds = try container.decodeOrDefault([String].self, forKey: .operatorUserIds, default: defaults.operatorUserIds)
+        manualRepairKeywords = try container.decodeOrDefault([String].self, forKey: .manualRepairKeywords, default: defaults.manualRepairKeywords)
+        aiApproveKeywords = try container.decodeOrDefault([String].self, forKey: .aiApproveKeywords, default: defaults.aiApproveKeywords)
+        aiRejectKeywords = try container.decodeOrDefault([String].self, forKey: .aiRejectKeywords, default: defaults.aiRejectKeywords)
+    }
+}
+
+extension AiConfig {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        enabled = try container.decodeOrDefault(Bool.self, forKey: .enabled, default: defaults.enabled)
+        provider = try container.decodeOrDefault(String.self, forKey: .provider, default: defaults.provider)
+        command = try container.decodeOrDefault(String.self, forKey: .command, default: defaults.command)
+        args = try container.decodeOrDefault([String].self, forKey: .args, default: defaults.args)
+        model = try container.decodeIfPresent(String.self, forKey: .model) ?? defaults.model
+        timeoutSeconds = try container.decodeOrDefault(Int.self, forKey: .timeoutSeconds, default: defaults.timeoutSeconds)
+        maxAttemptsPerDay = try container.decodeOrDefault(Int.self, forKey: .maxAttemptsPerDay, default: defaults.maxAttemptsPerDay)
+        cooldownSeconds = try container.decodeOrDefault(Int.self, forKey: .cooldownSeconds, default: defaults.cooldownSeconds)
+        allowCodeChanges = try container.decodeOrDefault(Bool.self, forKey: .allowCodeChanges, default: defaults.allowCodeChanges)
+        argsCode = try container.decodeOrDefault([String].self, forKey: .argsCode, default: defaults.argsCode)
+    }
+}
+
 struct ServiceStatus: Codable {
     let installed: Bool
     let running: Bool
@@ -512,7 +653,7 @@ struct RepairPresentation {
 extension RepairResult {
     var identityKey: String {
         if let attemptDir = details.attemptDir, !attemptDir.isEmpty {
-            return "attempt:\(attemptDir)"
+            return "attempt:\(redactedAttemptIdentity(attemptDir))"
         }
         if details.alreadyHealthy == true {
             return "already_healthy"
@@ -623,6 +764,23 @@ extension RepairResult {
             attemptLabel: attemptLabel,
         )
     }
+}
+
+private func redactedAttemptIdentity(_ attemptDir: String) -> String {
+    let standardizedPath = URL(fileURLWithPath: attemptDir).standardizedFileURL.path
+    let basename = URL(fileURLWithPath: standardizedPath).lastPathComponent
+    let safeBasename = basename.isEmpty ? "unknown" : basename
+    let digest = stableIdentityHash(for: standardizedPath)
+    return "\(safeBasename)#\(digest)"
+}
+
+private func stableIdentityHash(for value: String) -> String {
+    var hash: UInt64 = 0xcbf29ce484222325
+    for byte in value.utf8 {
+        hash ^= UInt64(byte)
+        hash &*= 0x100000001b3
+    }
+    return String(format: "%016llx", hash)
 }
 
 private func cleanedRepairMessage(_ message: String?) -> String? {
