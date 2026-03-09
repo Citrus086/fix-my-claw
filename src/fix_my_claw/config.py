@@ -695,6 +695,9 @@ def _dict_to_config(data: dict[str, Any]) -> AppConfig:
     if not isinstance(data, dict):
         raise TypeError("config payload must be a JSON object")
 
+    data = dict(data)
+    data.pop("api_version", None)
+
     anomaly_raw = data.get("anomaly_guard", data.get("loop_guard", {}))
     if anomaly_raw is None:
         anomaly_raw = {}

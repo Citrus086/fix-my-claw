@@ -20,6 +20,13 @@ from .config import (
     _write_toml,
 )
 from .monitor import monitor_loop, run_check
+from .protocol import (
+    build_check_payload,
+    build_config_payload,
+    build_repair_payload,
+    build_service_status_payload,
+    build_status_payload,
+)
 from .repair import attempt_repair
 from .shared import _as_path, setup_logging
 from .state import FileLock, State, StateStore
@@ -54,17 +61,17 @@ def _load_config_or_default(path: str) -> tuple[AppConfig, bool]:
 
 def _state_payload(store: StateStore, *, config_path: str, config_exists: bool, state: State | None = None) -> dict[str, object]:
     current = state or store.load()
-    return {
-        "enabled": current.enabled,
-        "config_path": str(_as_path(config_path)),
-        "config_exists": config_exists,
-        "state_path": str(store.path),
-        "last_ok_ts": current.last_ok_ts,
-        "last_repair_ts": current.last_repair_ts,
-        "last_ai_ts": current.last_ai_ts,
-        "ai_attempts_day": current.ai_attempts_day,
-        "ai_attempts_count": current.ai_attempts_count,
-    }
+    return build_status_payload(
+        enabled=current.enabled,
+        config_path=str(_as_path(config_path)),
+        config_exists=config_exists,
+        state_path=str(store.path),
+        last_ok_ts=current.last_ok_ts,
+        last_repair_ts=current.last_repair_ts,
+        last_ai_ts=current.last_ai_ts,
+        ai_attempts_day=current.ai_attempts_day,
+        ai_attempts_count=current.ai_attempts_count,
+    )
 
 
 def _emit_state_payload(payload: dict[str, object], *, as_json: bool) -> None:
@@ -89,7 +96,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     store = StateStore(cfg.monitor.state_dir)
     result = run_check(cfg, store)
     if args.json:
-        print(json.dumps(result.to_check_json(), ensure_ascii=False))
+        print(json.dumps(build_check_payload(result.to_check_json()), ensure_ascii=False))
     return 0 if result.effective_healthy else 1
 
 
@@ -112,7 +119,7 @@ def cmd_repair(args: argparse.Namespace) -> int:
         store = StateStore(cfg.monitor.state_dir)
         result = attempt_repair(cfg, store, force=args.force, reason=None)
         if args.json:
-            print(json.dumps(result.to_json(), ensure_ascii=False))
+            print(json.dumps(build_repair_payload(result.to_json()), ensure_ascii=False))
         return 0 if result.fixed else 1
 
     return _with_single_instance(cfg, _run)
@@ -182,7 +189,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_config_show(args: argparse.Namespace) -> int:
     cfg = _load_or_init_config(args.config, init_if_missing=False)
     if args.json:
-        print(json.dumps(_config_to_dict(cfg), ensure_ascii=False, indent=2))
+        print(json.dumps(build_config_payload(_config_to_dict(cfg)), ensure_ascii=False, indent=2))
         return 0
     print("Current configuration:")
     print(f"monitor.interval_seconds={cfg.monitor.interval_seconds}")
@@ -298,13 +305,13 @@ def _bootout_launchd_service(plist_path: Path) -> None:
 
 
 def _service_status_payload(*, installed: bool, running: bool) -> dict[str, object]:
-    return {
-        "installed": installed,
-        "running": running,
-        "label": _get_launchd_label(),
-        "plist_path": str(_get_launchd_plist_path()),
-        "domain": _get_launchd_domain(),
-    }
+    return build_service_status_payload(
+        installed=installed,
+        running=running,
+        label=_get_launchd_label(),
+        plist_path=str(_get_launchd_plist_path()),
+        domain=_get_launchd_domain(),
+    )
 
 
 def _emit_service_status(*, installed: bool, running: bool, as_json: bool) -> None:

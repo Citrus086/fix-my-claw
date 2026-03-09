@@ -1,0 +1,70 @@
+{
+  "api_version": "1.0",
+  "healthy": false,
+  "probe_healthy": false,
+  "reason": "gateway unhealthy",
+  "health": {
+    "name": "health",
+    "ok": false,
+    "exit_code": 1,
+    "duration_ms": 150,
+    "argv": ["openclaw", "gateway", "health", "--json"],
+    "stdout": "{\"ok\": false}",
+    "stderr": "gateway unavailable"
+  },
+  "status": {
+    "name": "status",
+    "ok": true,
+    "exit_code": 0,
+    "duration_ms": 80,
+    "argv": ["openclaw", "gateway", "status", "--json"],
+    "stdout": "{\"mode\": \"degraded\"}",
+    "stderr": ""
+  },
+  "logs": {
+    "ok": true,
+    "exit_code": 0,
+    "duration_ms": 25,
+    "argv": ["openclaw", "logs", "--limit", "200", "--plain"]
+  },
+  "anomaly_guard": {
+    "enabled": true,
+    "triggered": true,
+    "probe_ok": true,
+    "probe_exit_code": 0,
+    "metrics": {
+      "lines_analyzed": 120,
+      "events_analyzed": 9,
+      "cycle_repeated_turns": 4,
+      "ping_pong_turns": 0
+    },
+    "signals": {
+      "repeat_trigger": false,
+      "similar_repeat_trigger": false,
+      "ping_pong_trigger": false,
+      "cycle_trigger": true,
+      "stagnation_trigger": false,
+      "auto_dispatch_trigger": false
+    }
+  },
+  "loop_guard": {
+    "enabled": true,
+    "triggered": true,
+    "probe_ok": true,
+    "probe_exit_code": 0,
+    "metrics": {
+      "lines_analyzed": 120,
+      "events_analyzed": 9,
+      "cycle_repeated_turns": 4,
+      "ping_pong_turns": 0
+    },
+    "signals": {
+      "repeat_trigger": false,
+      "similar_repeat_trigger": false,
+      "ping_pong_trigger": false,
+      "cycle_trigger": true,
+      "stagnation_trigger": false,
+      "auto_dispatch_trigger": false
+    }
+  }
+}

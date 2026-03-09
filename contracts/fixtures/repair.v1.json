@@ -1,0 +1,32 @@
+{
+  "api_version": "1.0",
+  "attempted": true,
+  "fixed": true,
+  "used_ai": true,
+  "details": {
+    "attempt_dir": "/tmp/fix-my-claw/attempts/attempt-001",
+    "reason": "gateway unhealthy",
+    "already_healthy": false,
+    "repair_disabled": false,
+    "cooldown": false,
+    "cooldown_remaining_seconds": 0,
+    "pause_wait_seconds": 20,
+    "ai_decision": {
+      "asked": true,
+      "decision": "yes",
+      "source": "discord",
+      "invalid_replies": 0
+    },
+    "ai_stage": "config",
+    "official_break_reason": "still_unhealthy",
+    "backup_before_ai_error": null,
+    "notify_final": {
+      "sent": true,
+      "message_id": "msg-123456789",
+      "exit_code": 0,
+      "argv": ["notify", "--message", "fix-my-claw: AI config repair completed"],
+      "stderr": "",
+      "stdout": ""
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "api_version": "1.0",
+  "installed": true,
+  "running": true,
+  "label": "com.fix-my-claw.monitor",
+  "plist_path": "~/Library/LaunchAgents/com.fix-my-claw.monitor.plist",
+  "domain": "gui/501"
+}

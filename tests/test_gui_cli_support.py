@@ -12,6 +12,7 @@ from unittest.mock import patch
 from fix_my_claw import cli
 from fix_my_claw import config as config_module
 from fix_my_claw import health as health_module
+from fix_my_claw import protocol as protocol_module
 from fix_my_claw import repair_types
 from fix_my_claw import state as state_module
 from fix_my_claw.runtime import CmdResult
@@ -165,6 +166,7 @@ class TestGuiCliCommands(unittest.TestCase):
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["api_version"], protocol_module.API_VERSION)
         self.assertEqual(payload["monitor"]["interval_seconds"], 75)
         self.assertTrue(payload["ai"]["enabled"])
 
@@ -222,6 +224,29 @@ class TestGuiCliCommands(unittest.TestCase):
             self.assertEqual(written_data["monitor"]["interval_seconds"], 120)
             self.assertTrue(written_data["ai"]["enabled"])
             self.assertIn("openclaw", written_data)
+
+    def test_cmd_config_set_ignores_api_version_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            args = SimpleNamespace(config=str(config_path), json=True)
+            stdin_payload = {
+                "api_version": "9.9",
+                "monitor": {
+                    "interval_seconds": 30,
+                    "state_dir": str(Path(tmpdir) / "state"),
+                    "log_file": str(Path(tmpdir) / "fix-my-claw.log"),
+                },
+            }
+
+            with patch("sys.stdin", new=io.StringIO(json.dumps(stdin_payload))), patch.object(
+                cli, "_write_toml"
+            ) as write_mock, patch("sys.stdout", new=io.StringIO()):
+                code = cli.cmd_config_set(args)
+
+            self.assertEqual(code, 0)
+            _, written_data = write_mock.call_args.args
+            self.assertNotIn("api_version", written_data)
+            self.assertEqual(written_data["monitor"]["interval_seconds"], 30)
 
     def test_cmd_config_set_preserves_gui_round_trip_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -330,6 +355,7 @@ class TestGuiCliCommands(unittest.TestCase):
 
             self.assertEqual(code, 0)
             payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["api_version"], protocol_module.API_VERSION)
             self.assertEqual(payload["enabled"], False)
             self.assertEqual(payload["config_path"], str(config_path.resolve()))
             self.assertEqual(payload["config_exists"], True)
@@ -405,6 +431,7 @@ class TestGuiCliCommands(unittest.TestCase):
 
             self.assertEqual(code, 1)
             payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["api_version"], protocol_module.API_VERSION)
             self.assertEqual(payload["healthy"], False)
             self.assertEqual(payload["probe_healthy"], False)
             self.assertEqual(payload["reason"], "gateway unhealthy")
@@ -482,6 +509,7 @@ class TestGuiCliCommands(unittest.TestCase):
 
             self.assertEqual(code, 0)
             payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["api_version"], protocol_module.API_VERSION)
             self.assertEqual(payload["attempted"], True)
             self.assertEqual(payload["fixed"], True)
             self.assertEqual(payload["used_ai"], True)
@@ -549,6 +577,7 @@ class TestGuiCliCommands(unittest.TestCase):
 
             self.assertEqual(code, 1)
             payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["api_version"], protocol_module.API_VERSION)
             self.assertEqual(payload["attempted"], True)
             self.assertEqual(payload["fixed"], False)
             self.assertEqual(payload["details"]["backup_before_ai_error"], "disk full")
@@ -572,6 +601,7 @@ class TestGuiCliCommands(unittest.TestCase):
 
             self.assertEqual(code, 0)
             payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["api_version"], protocol_module.API_VERSION)
             self.assertTrue(payload["installed"])
             self.assertTrue(payload["running"])
             self.assertEqual(payload["label"], cli._get_launchd_label())

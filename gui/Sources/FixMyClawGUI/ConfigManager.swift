@@ -97,8 +97,9 @@ class ConfigManager: ObservableObject {
     private func fetchConfigSnapshot() async throws -> RawConfigSnapshot {
         let stdout = try await runConfigCommand(args: configCommandArgs(subcommand: ["config", "show", "--json"]))
         let payload = try Self.decodeJSONObject(from: stdout)
-        let decoded = try JSONDecoder().decode(AppConfig.self, from: stdout)
-        return RawConfigSnapshot(payload: payload, config: decoded)
+        try validateTopLevelAPIVersion(in: payload)
+        let decoded = try JSONDecoder().decode(AppConfigDTO.self, from: stdout)
+        return RawConfigSnapshot(payload: payload, config: AppConfig(dto: decoded))
     }
 
     private func mergedPayload(with config: AppConfig) throws -> [String: Any] {
@@ -176,7 +177,7 @@ class ConfigManager: ObservableObject {
         basePayload: [String: Any],
         modelConfig: AppConfig
     ) throws -> [String: Any] {
-        let modelData = try JSONEncoder().encode(modelConfig)
+        let modelData = try JSONEncoder().encode(AppConfigDTO(editable: modelConfig))
         let modelPayload = try decodeJSONObject(from: modelData)
         return deepMerge(base: basePayload, overrides: modelPayload)
     }

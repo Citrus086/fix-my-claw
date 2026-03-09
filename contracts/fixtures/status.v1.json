@@ -1,0 +1,12 @@
+{
+  "api_version": "1.0",
+  "enabled": false,
+  "config_path": "~/.fix-my-claw/config.toml",
+  "config_exists": true,
+  "state_path": "~/.fix-my-claw/state.json",
+  "last_ok_ts": 1709500000,
+  "last_repair_ts": 1709510000,
+  "last_ai_ts": 1709520000,
+  "ai_attempts_day": "2026-03-09",
+  "ai_attempts_count": 2
+}

@@ -11,6 +11,7 @@ final class ConfigResilienceTests: XCTestCase {
     func testAppConfigDecodesPartialSectionsUsingFieldDefaults() throws {
         let payload = """
         {
+          "api_version": "1.0",
           "monitor": {
             "state_dir": "/tmp/fix-my-claw-state"
           },
@@ -35,7 +36,7 @@ final class ConfigResilienceTests: XCTestCase {
         }
         """
 
-        let config = try decode(AppConfig.self, from: payload)
+        let config = AppConfig(dto: try decode(AppConfigDTO.self, from: payload))
 
         XCTAssertEqual(config.monitor.stateDir, "/tmp/fix-my-claw-state")
         XCTAssertEqual(config.monitor.intervalSeconds, 60)
@@ -77,6 +78,7 @@ final class ConfigResilienceTests: XCTestCase {
 
         let merged = try ConfigManager.mergePayloadPreservingUnknownFields(
             basePayload: [
+                "api_version": "1.0",
                 "monitor": [
                     "interval_seconds": 60,
                     "probe_timeout_seconds": 30,
@@ -97,6 +99,7 @@ final class ConfigResilienceTests: XCTestCase {
         let notify = try XCTUnwrap(merged["notify"] as? [String: Any])
         let unknownRoot = try XCTUnwrap(merged["unknown_root"] as? [String: Any])
 
+        XCTAssertEqual(merged["api_version"] as? String, "1.0")
         XCTAssertEqual(monitor["interval_seconds"] as? Int, 15)
         XCTAssertEqual(monitor["unknown_monitor_flag"] as? String, "keep-me")
         XCTAssertEqual(notify["level"] as? String, "critical")

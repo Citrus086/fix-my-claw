@@ -8,10 +8,92 @@ final class PayloadDecodingTests: XCTestCase {
         try decoder.decode(type, from: Data(json.utf8))
     }
 
-    func testAppConfigDecodesWithMissingSectionsUsingDefaults() throws {
-        let payload = "{}"
+    // MARK: - Contract Tests (using shared fixtures)
 
-        let config = try decode(AppConfig.self, from: payload)
+    func testContract_ConfigShowFixture() throws {
+        let dto = try FixtureLoader.load(AppConfigDTO.self, from: "config.show.v1.json")
+        let config = AppConfig(dto: dto)
+
+        // Verify key defaults
+        XCTAssertEqual(config.monitor.intervalSeconds, 60)
+        XCTAssertEqual(config.repair.enabled, true)
+        XCTAssertEqual(config.openclaw.command, "openclaw")
+        XCTAssertEqual(config.notify.level, "all")
+        XCTAssertEqual(config.agentRoles.orchestrator, ["orchestrator", "macs-orchestrator"])
+        XCTAssertEqual(config.agentRoles.builder, ["builder", "macs-builder"])
+    }
+
+    func testContract_StatusFixture() throws {
+        let status = try FixtureLoader.load(StatusPayload.self, from: "status.v1.json")
+
+        XCTAssertEqual(status.enabled, false)
+        XCTAssertEqual(status.configExists, true)
+        XCTAssertEqual(status.lastOkTs, 1709500000)
+        XCTAssertEqual(status.lastRepairTs, 1709510000)
+        XCTAssertEqual(status.lastAiTs, 1709520000)
+        XCTAssertEqual(status.aiAttemptsDay, "2026-03-09")
+        XCTAssertEqual(status.aiAttemptsCount, 2)
+    }
+
+    func testContract_CheckFixture() throws {
+        let check = try FixtureLoader.load(CheckPayload.self, from: "check.v1.json")
+
+        XCTAssertEqual(check.healthy, false)
+        XCTAssertEqual(check.probeHealthy, false)
+        XCTAssertEqual(check.reason, "gateway unhealthy")
+        XCTAssertEqual(check.health.exitCode, 1)
+        XCTAssertEqual(check.status.exitCode, 0)
+        XCTAssertEqual(check.logs?.argv, ["openclaw", "logs", "--limit", "200", "--plain"])
+        XCTAssertEqual(check.anomalyGuard?.triggered, true)
+        XCTAssertEqual(check.loopGuard?.signals?.cycleTrigger, true)
+    }
+
+    func testContract_RepairFixture() throws {
+        let result = try FixtureLoader.load(RepairResult.self, from: "repair.v1.json")
+
+        XCTAssertEqual(result.attempted, true)
+        XCTAssertEqual(result.fixed, true)
+        XCTAssertEqual(result.usedAi, true)
+        XCTAssertEqual(result.details.attemptDir, "/tmp/fix-my-claw/attempts/attempt-001")
+        XCTAssertEqual(result.details.aiDecision?.decision, "yes")
+        XCTAssertEqual(result.details.aiStage, "config")
+        XCTAssertEqual(result.details.officialBreakReason, "still_unhealthy")
+        XCTAssertEqual(result.details.notifyFinal?.messageText, "fix-my-claw: AI config repair completed")
+    }
+
+    func testContract_ServiceStatusFixture() throws {
+        let status = try FixtureLoader.load(ServiceStatus.self, from: "service.status.v1.json")
+
+        XCTAssertEqual(status.installed, true)
+        XCTAssertEqual(status.running, true)
+        XCTAssertEqual(status.label, "com.fix-my-claw.monitor")
+    }
+
+    func testContract_AllFixturesHaveValidAPIVersion() throws {
+        let fixtures = [
+            "config.show.v1.json",
+            "status.v1.json",
+            "check.v1.json",
+            "repair.v1.json",
+            "service.status.v1.json",
+        ]
+
+        for fixtureName in fixtures {
+            let data = try FixtureLoader.loadData(name: fixtureName)
+            XCTAssertNoThrow(try validateTopLevelAPIVersion(in: data), "Failed for \(fixtureName)")
+        }
+    }
+
+    // MARK: - Edge Case Tests (inline JSON)
+
+    func testAppConfigDecodesWithMissingSectionsUsingDefaults() throws {
+        let payload = """
+        {
+          "api_version": "1.0"
+        }
+        """
+
+        let config = AppConfig(dto: try decode(AppConfigDTO.self, from: payload))
 
         XCTAssertEqual(config.monitor.intervalSeconds, 60)
         XCTAssertEqual(config.repair.enabled, true)
@@ -27,170 +109,10 @@ final class PayloadDecodingTests: XCTestCase {
         XCTAssertEqual(config.agentRoles.builder, ["builder", "macs-builder"])
     }
 
-    func testStatusPayloadDecodesGuiRequiredFields() throws {
-        let payload = """
-        {
-          "enabled": true,
-          "config_path": "/tmp/config.toml",
-          "config_exists": true,
-          "state_path": "/tmp/state.json",
-          "last_ok_ts": 11,
-          "last_repair_ts": 22,
-          "last_ai_ts": 33,
-          "ai_attempts_day": "2026-03-09",
-          "ai_attempts_count": 2
-        }
-        """
-
-        let status = try decode(StatusPayload.self, from: payload)
-
-        XCTAssertEqual(status.enabled, true)
-        XCTAssertEqual(status.configPath, "/tmp/config.toml")
-        XCTAssertEqual(status.configExists, true)
-        XCTAssertEqual(status.statePath, "/tmp/state.json")
-        XCTAssertEqual(status.lastOkTs, 11)
-        XCTAssertEqual(status.lastRepairTs, 22)
-        XCTAssertEqual(status.lastAiTs, 33)
-        XCTAssertEqual(status.aiAttemptsDay, "2026-03-09")
-        XCTAssertEqual(status.aiAttemptsCount, 2)
-    }
-
-    func testCheckPayloadDecodesGuiRequiredFields() throws {
-        let payload = """
-        {
-          "healthy": false,
-          "probe_healthy": false,
-          "reason": "gateway unhealthy",
-          "health": {
-            "name": "health",
-            "ok": false,
-            "exit_code": 1,
-            "duration_ms": 150,
-            "argv": ["openclaw", "gateway", "health", "--json"],
-            "stdout": "{\\"ok\\": false}",
-            "stderr": "gateway unavailable",
-            "json": {"ok": false}
-          },
-          "status": {
-            "name": "status",
-            "ok": true,
-            "exit_code": 0,
-            "duration_ms": 80,
-            "argv": ["openclaw", "gateway", "status", "--json"],
-            "stdout": "{\\"mode\\": \\"degraded\\"}",
-            "stderr": "",
-            "json": {"mode": "degraded"}
-          },
-          "logs": {
-            "ok": true,
-            "exit_code": 0,
-            "duration_ms": 25,
-            "argv": ["openclaw", "logs", "--limit", "200", "--plain"]
-          },
-          "anomaly_guard": {
-            "enabled": true,
-            "triggered": true,
-            "probe_ok": true,
-            "probe_exit_code": 0,
-            "metrics": {
-              "lines_analyzed": 120,
-              "events_analyzed": 9,
-              "cycle_repeated_turns": 4,
-              "ping_pong_turns": 0
-            },
-            "signals": {
-              "repeat_trigger": false,
-              "similar_repeat_trigger": false,
-              "ping_pong_trigger": false,
-              "cycle_trigger": true,
-              "stagnation_trigger": false,
-              "auto_dispatch_trigger": false
-            }
-          },
-          "loop_guard": {
-            "enabled": true,
-            "triggered": true,
-            "probe_ok": true,
-            "probe_exit_code": 0,
-            "metrics": {
-              "lines_analyzed": 120,
-              "events_analyzed": 9,
-              "cycle_repeated_turns": 4,
-              "ping_pong_turns": 0
-            },
-            "signals": {
-              "repeat_trigger": false,
-              "similar_repeat_trigger": false,
-              "ping_pong_trigger": false,
-              "cycle_trigger": true,
-              "stagnation_trigger": false,
-              "auto_dispatch_trigger": false
-            }
-          }
-        }
-        """
-
-        let check = try decode(CheckPayload.self, from: payload)
-
-        XCTAssertEqual(check.healthy, false)
-        XCTAssertEqual(check.probeHealthy, false)
-        XCTAssertEqual(check.reason, "gateway unhealthy")
-        XCTAssertEqual(check.health.exitCode, 1)
-        XCTAssertEqual(check.status.exitCode, 0)
-        XCTAssertEqual(check.logs?.argv, ["openclaw", "logs", "--limit", "200", "--plain"])
-        XCTAssertEqual(check.anomalyGuard?.triggered, true)
-        XCTAssertEqual(check.loopGuard?.signals?.cycleTrigger, true)
-    }
-
-    func testRepairResultDecodesPostRefactorDetails() throws {
-        let payload = """
-        {
-          "attempted": true,
-          "fixed": true,
-          "used_ai": true,
-          "details": {
-            "attempt_dir": "/tmp/attempt-001",
-            "reason": "gateway unhealthy",
-            "already_healthy": false,
-            "repair_disabled": false,
-            "cooldown": false,
-            "cooldown_remaining_seconds": 0,
-            "pause_wait_seconds": 20,
-            "ai_decision": {
-              "asked": true,
-              "decision": "yes",
-              "source": "discord",
-              "invalid_replies": 0
-            },
-            "ai_stage": "config",
-            "official_break_reason": "still_unhealthy",
-            "backup_before_ai_error": "disk full",
-            "notify_final": {
-              "sent": true,
-              "message_id": "msg-1",
-              "exit_code": 0,
-              "argv": ["notify", "--message", "fix-my-claw: AI config repair completed"]
-            }
-          }
-        }
-        """
-
-        let result = try decode(RepairResult.self, from: payload)
-
-        XCTAssertEqual(result.attempted, true)
-        XCTAssertEqual(result.fixed, true)
-        XCTAssertEqual(result.usedAi, true)
-        XCTAssertEqual(result.details.attemptDir, "/tmp/attempt-001")
-        XCTAssertEqual(result.details.aiDecision?.decision, "yes")
-        XCTAssertEqual(result.details.aiStage, "config")
-        XCTAssertEqual(result.details.officialBreakReason, "still_unhealthy")
-        XCTAssertEqual(result.details.backupBeforeAiError, "disk full")
-        XCTAssertEqual(result.details.notifyFinal?.messageText, "fix-my-claw: AI config repair completed")
-    }
-
     func testRepairResultDecodesWhenAiDecisionStringIsMissing() throws {
         let payload = """
         {
+          "api_version": "1.0",
           "attempted": true,
           "fixed": false,
           "used_ai": false,
@@ -211,21 +133,41 @@ final class PayloadDecodingTests: XCTestCase {
         XCTAssertEqual(result.details.aiDecision?.source, "discord")
     }
 
-    func testServiceStatusDecodes() throws {
+    func testTopLevelAPIVersionValidationAllowsSupportedVersion() throws {
         let payload = """
         {
-          "installed": true,
-          "running": false,
-          "label": "com.fix-my-claw.monitor",
-          "plist_path": "/tmp/com.fix-my-claw.monitor.plist",
-          "domain": "gui/501"
+          "api_version": "1.2",
+          "enabled": true
         }
         """
 
-        let status = try decode(ServiceStatus.self, from: payload)
+        XCTAssertNoThrow(try validateTopLevelAPIVersion(in: Data(payload.utf8)))
+    }
 
-        XCTAssertEqual(status.installed, true)
-        XCTAssertEqual(status.running, false)
+    func testTopLevelAPIVersionValidationAllowsMissingVersionForBackwardCompatibility() throws {
+        let payload = """
+        {
+          "enabled": true
+        }
+        """
+
+        XCTAssertNoThrow(try validateTopLevelAPIVersion(in: Data(payload.utf8)))
+    }
+
+    func testTopLevelAPIVersionValidationRejectsUnsupportedMajorVersion() throws {
+        let payload = """
+        {
+          "api_version": "2.0",
+          "enabled": true
+        }
+        """
+
+        XCTAssertThrowsError(try validateTopLevelAPIVersion(in: Data(payload.utf8))) { error in
+            guard case CLIError.unsupportedAPIVersion(let version) = error else {
+                return XCTFail("Expected unsupportedAPIVersion, got \(error)")
+            }
+            XCTAssertEqual(version, "2.0")
+        }
     }
 
     func testConfigManagerResolvesOverrideConfigPath() {

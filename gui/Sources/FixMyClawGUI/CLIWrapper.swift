@@ -66,7 +66,8 @@ actor CLIWrapper {
             args += ["--config", path]
         }
         let output = try await run(args: args)
-        return try decode(AppConfig.self, from: output.stdout)
+        let dto = try decode(AppConfigDTO.self, from: output.stdout)
+        return AppConfig(dto: dto)
     }
 
     func setConfig(_ config: AppConfig, configPath: String? = nil) async throws {
@@ -77,7 +78,7 @@ actor CLIWrapper {
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let jsonData = try encoder.encode(config)
+        let jsonData = try encoder.encode(AppConfigDTO(editable: config))
         try await runWithInput(args: args, input: jsonData, timeout: 60)
     }
     
@@ -238,8 +239,12 @@ actor CLIWrapper {
 
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do {
+            try validateTopLevelAPIVersion(in: data)
             return try JSONDecoder().decode(type, from: data)
         } catch {
+            if let cliError = error as? CLIError {
+                throw cliError
+            }
             throw CLIError.decodingFailed(error)
         }
     }
