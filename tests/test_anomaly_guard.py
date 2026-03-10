@@ -879,6 +879,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target="channel:123",
+                required_mention_id=TEST_BOT_USER_ID,
             )
         )
         plain_yes = {"content": "yes", "author": {"id": "u1", "bot": False}}
@@ -909,21 +910,26 @@ class TestNotifyDecision(unittest.TestCase):
             "yes",
         )
 
-    def test_default_required_mention_id_prefers_configured_value(self) -> None:
+    def test_channel_target_without_required_mention_id_rejects_replies(self) -> None:
         cfg = config_module.AppConfig(
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target="channel:123",
-                required_mention_id="custom-bot-id",
             )
         )
-        self.assertEqual(notify_module._default_required_mention_id(cfg), "custom-bot-id")
+        mention_yes = {
+            "content": f"<@{TEST_BOT_USER_ID}> yes",
+            "author": {"id": "u1", "bot": False},
+            "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+        }
+        self.assertIsNone(notify_module._extract_ai_decision(cfg, mention_yes))
 
     def test_extract_manual_repair_command_requires_mention_and_operator_filter(self) -> None:
         cfg = config_module.AppConfig(
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target=f"channel:{TEST_CHANNEL_ID}",
+                required_mention_id=TEST_BOT_USER_ID,
                 operator_user_ids=["u1"],
             )
         )
@@ -975,6 +981,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target=f"channel:{TEST_CHANNEL_ID}",
+                required_mention_id=TEST_BOT_USER_ID,
                 operator_user_ids=["u1"],
                 manual_repair_keywords=["fixit", "repair", "修复"],
             )
@@ -1029,6 +1036,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target=f"channel:{TEST_CHANNEL_ID}",
+                required_mention_id=TEST_BOT_USER_ID,
                 operator_user_ids=["u1"],
                 ai_approve_keywords=["ok", "confirm"],
                 ai_reject_keywords=["skip", "cancel"],
@@ -1094,6 +1102,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target=f"channel:{TEST_CHANNEL_ID}",
+                required_mention_id=TEST_BOT_USER_ID,
             ),
         )
         after_ids: list[str | None] = []
@@ -1132,6 +1141,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target=f"channel:{TEST_CHANNEL_ID}",
+                required_mention_id=TEST_BOT_USER_ID,
                 ask_enable_ai=True,
                 ask_timeout_seconds=60,
                 poll_interval_seconds=1,
@@ -1163,9 +1173,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify_module,
             "_notify_send",
             side_effect=[sent_payload, {"sent": True}, {"sent": True}],
-        ) as notify_mock, patch.object(
-            notify_module, "_resolve_sent_message_author_id", return_value=TEST_BOT_USER_ID
-        ), patch.object(notify_module, "_notify_read_messages", side_effect=[invalid_replies]):
+        ) as notify_mock, patch.object(notify_module, "_notify_read_messages", side_effect=[invalid_replies]):
             out = notify_module._ask_user_enable_ai(cfg, attempt_dir)
             self.assertEqual(out.get("decision"), "invalid_limit")
             self.assertEqual(out.get("invalid_replies"), 3)
@@ -1176,6 +1184,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target=f"channel:{TEST_CHANNEL_ID}",
+                required_mention_id=TEST_BOT_USER_ID,
                 ask_enable_ai=True,
                 ask_timeout_seconds=60,
                 poll_interval_seconds=1,
@@ -1202,9 +1211,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify_module,
             "_notify_send",
             side_effect=[sent_payload, {"sent": True}],
-        ) as notify_mock, patch.object(
-            notify_module, "_resolve_sent_message_author_id", return_value=TEST_BOT_USER_ID
-        ), patch.object(notify_module, "_notify_read_messages", side_effect=[invalid_replies]):
+        ) as notify_mock, patch.object(notify_module, "_notify_read_messages", side_effect=[invalid_replies]):
             out = notify_module._ask_user_enable_ai(cfg, attempt_dir)
             self.assertEqual(out.get("decision"), "invalid_limit")
             self.assertEqual(out.get("invalid_replies"), 2)
@@ -1215,6 +1222,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target=f"channel:{TEST_CHANNEL_ID}",
+                required_mention_id=TEST_BOT_USER_ID,
                 ask_enable_ai=True,
                 ask_timeout_seconds=1,
                 poll_interval_seconds=0,
@@ -1234,8 +1242,6 @@ class TestNotifyDecision(unittest.TestCase):
             return []
 
         with patch.object(notify_module, "_notify_send", return_value={"sent": True, "message_id": "m-ask"}), patch.object(
-            notify_module, "_resolve_sent_message_author_id", return_value=TEST_BOT_USER_ID
-        ), patch.object(
             notify_module, "_notify_read_messages", side_effect=_read_side_effect
         ), patch.object(
             notify_module.time, "monotonic", side_effect=[0, 0, 0.5, 2]
@@ -1256,6 +1262,7 @@ class TestNotifyDecision(unittest.TestCase):
             notify=config_module.NotifyConfig(
                 account=TEST_BOT_USERNAME,
                 target=f"channel:{TEST_CHANNEL_ID}",
+                required_mention_id=TEST_BOT_USER_ID,
                 ask_enable_ai=True,
                 ask_timeout_seconds=1,
                 poll_interval_seconds=0,
@@ -1279,8 +1286,6 @@ class TestNotifyDecision(unittest.TestCase):
             return []
 
         with patch.object(notify_module, "_notify_send", return_value={"sent": True, "message_id": "m-ask"}), patch.object(
-            notify_module, "_resolve_sent_message_author_id", return_value=TEST_BOT_USER_ID
-        ), patch.object(
             notify_module, "_notify_read_messages", side_effect=_read_side_effect
         ), patch.object(
             notify_module.time, "monotonic", side_effect=[0, 0, 0.5, 2]
@@ -2578,7 +2583,7 @@ class TestCliCommands(unittest.TestCase):
                 code = cli.cmd_repair(args)
 
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(stdout.getvalue()), {"fixed": True})
+        self.assertEqual(json.loads(stdout.getvalue()), {"api_version": "1.0", "fixed": True})
         self.assertEqual(attempt_repair_mock.call_args.args[0], cfg)
         self.assertIsInstance(attempt_repair_mock.call_args.args[1], state_module.StateStore)
         self.assertEqual(

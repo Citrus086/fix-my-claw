@@ -109,7 +109,8 @@ flowchart TD
 - `auto_dispatch_check` 现在按真实 handoff 分析：识别谁发起交接、交接给谁，再判断后续是否由非预期角色持续输出。
 - 新增：`[notify]` 可配置 Discord 通知与 yes/no 询问。
 - 说明：流程状态通知始终会发送；`yes/no` 询问仅在 `ai.enabled = true` 时生效。
-- 说明：当 `notify.target` 指向频道（`channel:...`）时，yes/no 需要在消息里 `@` 当前通知账号（如 `@fix-my-claw yes`）。
+- 说明：`notify.account` 是 OpenClaw 的 `accountId`，用于 `openclaw message send/read --account`；它不是 Discord bot 用户 ID。
+- 说明：当 `notify.target` 指向频道（`channel:...`）时，必须显式配置 `notify.required_mention_id`，并且频道回复里要明确 mention 这个 Discord 用户 ID（例如 `<@BOT_USER_ID> yes`）。
 - 说明：只接受严格回复 `是/否/yes/no`；不匹配会重问，累计 3 次不匹配则本轮默认不启用 Codex。
 - 扩展：`[repair]` 新增会话控制参数（软暂停 `PAUSE`、`/stop`、`/new`、活跃会话筛选）。
 - 兼容：仍支持旧键名 `[loop_guard]`。

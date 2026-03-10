@@ -93,10 +93,10 @@ struct AdvancedSettingsView: View, ConfigBindable {
             Divider()
 
             Group {
-                SectionHeader(title: "通知", description: "通知发送、读取、审批轮询和关键词匹配。")
+                SectionHeader(title: "通知", description: "通知发送、读取、Discord 频道 mention 过滤、审批轮询和关键词匹配。")
 
                 TextFieldRow(
-                    title: "渠道",
+                    title: "通知渠道",
                     text: binding(
                         default: "discord",
                         get: { $0.notify.channel },
@@ -105,30 +105,39 @@ struct AdvancedSettingsView: View, ConfigBindable {
                 )
 
                 TextFieldRow(
-                    title: "账号",
+                    title: "OpenClaw 账号 ID",
                     text: binding(
                         default: "fix-my-claw",
                         get: { $0.notify.account },
                         set: { $0.notify.account = $1 }
-                    )
+                    ),
+                    description: "这个值会原样传给 `openclaw message send/read --account`。它是 OpenClaw 的 accountId，不是 Discord bot 用户 ID。",
+                    message: notifyAccountMessage?.text,
+                    messageTone: notifyAccountMessage?.tone ?? .info
                 )
 
                 TextFieldRow(
-                    title: "目标",
+                    title: "通知目标",
                     text: binding(
                         default: "channel:YOUR_DISCORD_CHANNEL_ID",
                         get: { $0.notify.target },
                         set: { $0.notify.target = $1 }
-                    )
+                    ),
+                    description: "Discord 用 `channel:频道ID` 或 `user:用户ID`。如果这里是 `channel:...`，下方的 Discord Mention User ID 也必须配置。",
+                    message: notifyTargetMessage?.text,
+                    messageTone: notifyTargetMessage?.tone ?? .info
                 )
 
                 TextFieldRow(
-                    title: "必需 mention ID",
+                    title: "Discord Mention User ID",
                     text: binding(
                         default: "",
                         get: { $0.notify.requiredMentionId },
                         set: { $0.notify.requiredMentionId = $1 }
-                    )
+                    ),
+                    description: "只在 Discord 频道模式下生效。fix-my-claw 现在只认明确 mention 到这个用户 ID 的频道回复，不再按账号名或内置映射自动推断。",
+                    message: requiredMentionIdMessage?.text,
+                    messageTone: requiredMentionIdMessage?.tone ?? .info
                 )
 
                 Toggle(
@@ -521,6 +530,22 @@ struct AdvancedSettingsView: View, ConfigBindable {
 }
 
 private extension AdvancedSettingsView {
+    var currentNotifyChannel: String {
+        configManager.config?.notify.channel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "discord"
+    }
+
+    var currentNotifyTarget: String {
+        configManager.config?.notify.target.trimmingCharacters(in: .whitespacesAndNewlines) ?? "channel:YOUR_DISCORD_CHANNEL_ID"
+    }
+
+    var currentRequiredMentionId: String {
+        configManager.config?.notify.requiredMentionId.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    var isDiscordChannelTarget: Bool {
+        currentNotifyChannel == "discord" && currentNotifyTarget.lowercased().hasPrefix("channel:")
+    }
+
     var openClawCommandMessage: (text: String, tone: FormMessageTone)? {
         executableMessage(
             for: configManager.config?.openclaw.command ?? openClawDefaults.command,
@@ -540,6 +565,34 @@ private extension AdvancedSettingsView {
             for: configManager.config?.openclaw.workspaceDir ?? openClawDefaults.workspaceDir,
             label: "OpenClaw 工作目录"
         )
+    }
+
+    var notifyAccountMessage: (text: String, tone: FormMessageTone)? {
+        let trimmed = configManager.config?.notify.account.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else {
+            return ("OpenClaw 账号 ID 不能为空。否则 `openclaw message send/read` 无法确定使用哪个通知账号。", .warning)
+        }
+        return ("当前值会作为 `--account \(trimmed)` 传给 OpenClaw。它不负责 Discord mention 过滤。", .info)
+    }
+
+    var notifyTargetMessage: (text: String, tone: FormMessageTone)? {
+        if isDiscordChannelTarget {
+            return ("当前是 Discord 频道模式。频道里的手动修复命令和 yes/no 审批都必须明确 mention 下方的 Discord 用户 ID。", .info)
+        }
+        return ("当前不是 Discord 频道模式，mention 过滤不会按频道规则生效。", .info)
+    }
+
+    var requiredMentionIdMessage: (text: String, tone: FormMessageTone)? {
+        guard isDiscordChannelTarget else {
+            return ("当前 target 不是 Discord 频道；这个字段可留空。", .info)
+        }
+        guard !currentRequiredMentionId.isEmpty else {
+            return ("Discord 频道模式下这里必须填写。留空后，频道里的手动修复命令和 yes/no 审批都不会被识别。", .warning)
+        }
+        guard currentRequiredMentionId.allSatisfy(\.isNumber) else {
+            return ("这里应填写 Discord 用户 ID，通常是一串纯数字。", .warning)
+        }
+        return ("只有明确 mention 到这个 Discord 用户 ID 的频道回复才会被 fix-my-claw 识别。", .info)
     }
 
     func restoreOpenClawDefaults() {

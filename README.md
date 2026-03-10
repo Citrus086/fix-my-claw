@@ -111,7 +111,8 @@ All settings live in a single TOML file.
 - `auto_dispatch_check` now analyzes real handoffs: who delegated, who was the target, and whether an unexpected agent keeps speaking afterwards.
 - New: `[notify]` supports Discord notifications and yes/no approval prompts.
 - Note: status notifications are always sent; `yes/no` approval is only used when `ai.enabled = true`.
-- Note: when `notify.target` is a channel (`channel:...`), yes/no replies must mention the notify account (for example, `@fix-my-claw yes`).
+- Note: `notify.account` is the OpenClaw `accountId` used for `openclaw message send/read --account`; it is not the Discord bot user id.
+- Note: when `notify.target` is a channel (`channel:...`), you must explicitly configure `notify.required_mention_id`, and replies must mention that Discord user id (for example, `<@BOT_USER_ID> yes`).
 - Note: only strict replies `yes/no` or `是/否` are accepted; non-matching replies trigger a re-ask, and after 3 invalid replies AI repair is skipped for this incident.
 - Extended: `[repair]` adds session-level control knobs for soft `PAUSE`, `/stop`, `/new`, and active-session filtering.
 - Compatibility: legacy key `[loop_guard]` is still accepted.

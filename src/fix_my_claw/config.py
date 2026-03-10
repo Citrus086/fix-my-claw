@@ -98,11 +98,13 @@ post_step_wait_seconds = 2
 [notify]
 channel = "discord"
 account = "fix-my-claw"
+# OpenClaw accountId used for `openclaw message send/read --account`.
+# This is NOT the Discord bot user id / mention id.
 # Target for notifications. For Discord, use "channel:YOUR_CHANNEL_ID" or "user:YOUR_USER_ID".
 # You must configure this to receive alerts.
 target = "channel:YOUR_DISCORD_CHANNEL_ID"
-# If set, channel replies must explicitly mention this account/user id.
-# Leave empty to auto-detect from built-in defaults when possible.
+# Discord user id that channel replies must explicitly mention.
+# When target is channel:..., fill this explicitly; fix-my-claw no longer auto-detects it.
 required_mention_id = ""
 silent = true
 send_timeout_seconds = 20
@@ -114,7 +116,7 @@ read_limit = 20
 max_invalid_replies = 3
 # Notification level: "all" (all events), "important" (AI confirmation, repair failures), "critical" (only critical failures)
 level = "all"
-# If target is channel:..., reply should mention notify account (e.g. "@fix-my-claw yes").
+# If target is channel:..., reply should mention required_mention_id (for example, "<@BOT_USER_ID> yes").
 # Only strict replies are accepted: 是/否/yes/no. Invalid replies are re-asked and capped at 3 attempts.
 operator_user_ids = []
 # Keywords for manual repair command recognition (case-insensitive)

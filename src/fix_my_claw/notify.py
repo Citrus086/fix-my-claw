@@ -22,9 +22,6 @@ from .shared import (
 )
 
 _MANUAL_REPAIR_CURSOR_NAME = "notify.manual_repair.cursor.json"
-_KNOWN_NOTIFY_ACCOUNT_IDS = {
-    "fixmyclaw": "1479170394580848660",
-}
 
 
 def _get_manual_repair_tokens(cfg: AppConfig) -> frozenset[str]:
@@ -117,10 +114,6 @@ def _notify_read_messages(cfg: AppConfig, *, after_id: str | None = None) -> lis
     return out
 
 
-def _normalize_name_key(value: str) -> str:
-    return re.sub(r"[\s_\-]+", "", value.strip().lower())
-
-
 def _max_message_id(current: str | None, candidate: str | None) -> str | None:
     ids = [x for x in (current, candidate) if x]
     if not ids:
@@ -135,60 +128,35 @@ def _normalize_ai_reply_token(text: str) -> str:
     return t
 
 
-def _message_mentions_notify_account(
-    cfg: AppConfig, message: dict[str, Any], *, required_mention_id: str | None
-) -> bool:
+def _configured_required_mention_id(cfg: AppConfig) -> str | None:
+    configured = cfg.notify.required_mention_id.strip()
+    return configured or None
+
+
+def _message_mentions_required_id(message: dict[str, Any], *, required_mention_id: str | None) -> bool:
+    if not required_mention_id:
+        return False
+
     mentions = message.get("mentions")
     mention_list = mentions if isinstance(mentions, list) else []
 
-    account_key = _normalize_name_key(cfg.notify.account)
     for mention in mention_list:
         if not isinstance(mention, dict):
             continue
         mention_id = str(mention.get("id", "")).strip()
-        if required_mention_id and mention_id and mention_id == required_mention_id:
+        if mention_id and mention_id == required_mention_id:
             return True
-        for key in ("username", "global_name", "name", "display_name", "nick"):
-            raw = mention.get(key)
-            if isinstance(raw, str) and raw.strip() and _normalize_name_key(raw) == account_key:
-                return True
 
-    if required_mention_id:
-        content = str(message.get("content", ""))
-        if re.search(rf"<@!?{re.escape(required_mention_id)}>", content):
-            return True
+    content = str(message.get("content", ""))
+    if re.search(rf"<@!?{re.escape(required_mention_id)}>", content):
+        return True
     return False
-
-
-def _default_required_mention_id(cfg: AppConfig) -> str | None:
-    configured = cfg.notify.required_mention_id.strip()
-    if configured:
-        return configured
-    return _KNOWN_NOTIFY_ACCOUNT_IDS.get(_normalize_name_key(cfg.notify.account))
-
-
-def _resolve_sent_message_author_id(cfg: AppConfig, message_id: str | None) -> str | None:
-    if not message_id:
-        return None
-    target = str(message_id).strip()
-    if not target:
-        return None
-    for _ in range(3):
-        for msg in _notify_read_messages(cfg):
-            if str(msg.get("id", "")).strip() != target:
-                continue
-            author = msg.get("author")
-            if isinstance(author, dict):
-                author_id = str(author.get("id", "")).strip()
-                if author_id:
-                    return author_id
-        time.sleep(0.5)
-    return None
 
 
 def _is_ai_reply_candidate(
     cfg: AppConfig, message: dict[str, Any], *, required_mention_id: str | None = None
 ) -> bool:
+    required_mention_id = required_mention_id or _configured_required_mention_id(cfg)
     content = str(message.get("content", "")).strip()
     if not content:
         return False
@@ -199,8 +167,7 @@ def _is_ai_reply_candidate(
         return False
     if cfg.notify.operator_user_ids and author_id not in set(cfg.notify.operator_user_ids):
         return False
-    if cfg.notify.target.strip().lower().startswith("channel:") and not _message_mentions_notify_account(
-        cfg,
+    if cfg.notify.target.strip().lower().startswith("channel:") and not _message_mentions_required_id(
         message,
         required_mention_id=required_mention_id,
     ):
@@ -261,7 +228,6 @@ def _write_manual_repair_cursor(state_dir: Path, *, last_seen_message_id: str | 
 def _extract_manual_repair_command(
     cfg: AppConfig, message: dict[str, Any], *, required_mention_id: str | None = None
 ) -> dict[str, Any] | None:
-    required_mention_id = required_mention_id or _default_required_mention_id(cfg)
     if not _is_ai_reply_candidate(cfg, message, required_mention_id=required_mention_id):
         return None
     content = _normalize_ai_reply_token(str(message.get("content", "")))
@@ -316,13 +282,7 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
         )
         return {"asked": False, "decision": "send_failed", "error": str(exc)}
     message_id = sent.get("message_id")
-    try:
-        required_mention_id = _resolve_sent_message_author_id(
-            cfg,
-            str(message_id) if message_id else None,
-        )
-    except Exception:
-        required_mention_id = None
+    required_mention_id = _configured_required_mention_id(cfg)
     request_id = f"{attempt_dir.name}-{time.time_ns()}"
     request_payload = _create_ai_approval_request(
         cfg.monitor.state_dir,
