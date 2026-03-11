@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
       <string>@FIX_MY_CLAW_BIN@</string>
-      <string>repair</string>
+      <string>auto-repair</string>
       <string>--config</string>
       <string>@CONFIG_PATH@</string>
     </array>

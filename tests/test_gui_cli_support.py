@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -188,6 +189,20 @@ class TestGuiCliCommands(unittest.TestCase):
                 resolved = cli._get_fix_my_claw_path()
 
             self.assertEqual(resolved, str(bundle_bin.resolve()))
+
+    def test_generate_launchd_plist_uses_stable_service_binary_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = config_module.AppConfig(
+                monitor=config_module.MonitorConfig(state_dir=Path(tmpdir) / "state")
+            )
+            config_path = Path(tmpdir) / "config.toml"
+            stable_path = Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"
+
+            with patch.object(cli, "_get_launchd_service_binary_path", return_value=stable_path):
+                payload = plistlib.loads(cli._generate_launchd_plist(cfg, str(config_path)))
+
+            self.assertEqual(payload["ProgramArguments"][0], str(stable_path))
+            self.assertEqual(payload["ProgramArguments"][3], str(config_path.resolve()))
 
     def test_cmd_config_show_emits_json_payload(self) -> None:
         cfg = config_module.AppConfig(
@@ -519,7 +534,6 @@ class TestGuiCliCommands(unittest.TestCase):
                     name="ai_config",
                     status="completed",
                     payload=repair_types.AiRepairStageData(
-                        stage_name="ai_config",
                         result=_cmd_result(
                             ["codex", "exec", "-C", str(Path(tmpdir) / "workspace")],
                             duration_ms=900,
@@ -626,16 +640,41 @@ class TestGuiCliCommands(unittest.TestCase):
     def test_cmd_service_status_emits_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             plist_path = Path(tmpdir) / "com.fix-my-claw.monitor.plist"
-            plist_path.write_text("plist", encoding="utf-8")
-            args = SimpleNamespace(json=True)
+            plist_path.write_bytes(plistlib.dumps({
+                "ProgramArguments": [
+                    str(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"),
+                    "monitor",
+                    "--config",
+                    str(Path(tmpdir) / "config.toml"),
+                ]
+            }))
+            args = SimpleNamespace(json=True, config=str(Path(tmpdir) / "config.toml"))
             stdout = io.StringIO()
+            stable_path = Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"
+            print_output = f"""
+gui/501/{cli._get_launchd_label()} = {{
+    state = running
+
+    program = {stable_path}
+    arguments = {{
+        {stable_path}
+        monitor
+        --config
+        {Path(tmpdir) / "config.toml"}
+    }}
+}}
+"""
 
             with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
                 cli, "_get_launchd_plist_path", return_value=plist_path
             ), patch.object(
                 cli,
                 "_launchctl_run",
-                return_value=subprocess.CompletedProcess(["launchctl"], 0, "", ""),
+                return_value=subprocess.CompletedProcess(["launchctl"], 0, print_output, ""),
+            ), patch.object(
+                cli,
+                "_get_launchd_service_binary_path",
+                return_value=stable_path,
             ), patch("sys.stdout", new=stdout):
                 code = cli.cmd_service_status(args)
 
@@ -647,13 +686,143 @@ class TestGuiCliCommands(unittest.TestCase):
             self.assertEqual(payload["label"], cli._get_launchd_label())
             self.assertEqual(payload["plist_path"], str(plist_path))
             self.assertEqual(payload["domain"], cli._get_launchd_domain())
+            self.assertEqual(payload["program_path"], str(stable_path))
+            self.assertEqual(payload["config_path"], str((Path(tmpdir) / "config.toml").resolve()))
+            self.assertEqual(payload["expected_program_path"], str(stable_path))
+            self.assertEqual(payload["expected_config_path"], str((Path(tmpdir) / "config.toml").resolve()))
+            self.assertFalse(payload["drifted"])
+
+    def test_cmd_service_reconcile_updates_drifted_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = config_module.AppConfig(
+                monitor=config_module.MonitorConfig(state_dir=Path(tmpdir) / "state")
+            )
+            args = SimpleNamespace(config=str(Path(tmpdir) / "config.toml"), json=True)
+            stdout = io.StringIO()
+            initial_status = protocol_module.build_service_status_payload(
+                installed=True,
+                running=True,
+                label=cli._get_launchd_label(),
+                plist_path=str(Path(tmpdir) / "com.fix-my-claw.monitor.plist"),
+                domain=cli._get_launchd_domain(),
+                program_path="/tmp/old/fix-my-claw",
+                config_path=str((Path(tmpdir) / "config.toml").resolve()),
+                expected_program_path=str(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"),
+                expected_config_path=str((Path(tmpdir) / "config.toml").resolve()),
+                drifted=True,
+            )
+            final_status = protocol_module.build_service_status_payload(
+                installed=True,
+                running=True,
+                label=cli._get_launchd_label(),
+                plist_path=str(Path(tmpdir) / "com.fix-my-claw.monitor.plist"),
+                domain=cli._get_launchd_domain(),
+                program_path=str(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"),
+                config_path=str((Path(tmpdir) / "config.toml").resolve()),
+                expected_program_path=str(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"),
+                expected_config_path=str((Path(tmpdir) / "config.toml").resolve()),
+                drifted=False,
+            )
+
+            with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
+                cli, "_load_or_init_config", return_value=cfg
+            ), patch.object(
+                cli, "_copy_fix_my_claw_to_stable_service_path", return_value=(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service", False)
+            ), patch.object(
+                cli, "_collect_launchd_service_status", side_effect=[initial_status, final_status]
+            ), patch.object(
+                cli, "_restart_launchd_service"
+            ) as restart_mock, patch("sys.stdout", new=stdout):
+                code = cli.cmd_service_reconcile(args)
+
+            self.assertEqual(code, 0)
+            restart_mock.assert_called_once()
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["action"], "updated")
+            self.assertEqual(payload["reasons"], ["program_path"])
+            self.assertFalse(payload["service"]["drifted"])
+
+    def test_launchd_service_loaded_returns_false_when_print_reports_missing_service(self) -> None:
+        result = subprocess.CompletedProcess(
+            ["launchctl", "print"],
+            3,
+            "",
+            "Bad request.\nCould not find service \"com.fix-my-claw.monitor\" in domain for user gui: 501",
+        )
+
+        with patch.object(cli, "_launchctl_run", return_value=result):
+            self.assertFalse(cli._launchd_service_loaded())
+
+    def test_ensure_launchd_service_unloaded_skips_bootout_when_job_not_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plist_path = Path(tmpdir) / "com.fix-my-claw.monitor.plist"
+            launchctl_calls: list[tuple[tuple[str, ...], bool]] = []
+            job_target = cli._get_launchd_job_target()
+
+            def _launchctl_side_effect(*call_args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+                launchctl_calls.append((call_args, check))
+                if call_args == ("print", job_target):
+                    return subprocess.CompletedProcess(
+                        ["launchctl", *call_args],
+                        1,
+                        "",
+                        f"Bad request.\nCould not find service \"{cli._get_launchd_label()}\" in domain for user {cli._get_launchd_domain()}",
+                    )
+                return subprocess.CompletedProcess(["launchctl", *call_args], 0, "", "")
+
+            with patch.object(cli, "_launchctl_run", side_effect=_launchctl_side_effect):
+                cli._ensure_launchd_service_unloaded(plist_path)
+
+            self.assertEqual(launchctl_calls, [(("print", job_target), False)])
+
+    def test_ensure_launchd_service_unloaded_tolerates_racy_missing_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plist_path = Path(tmpdir) / "com.fix-my-claw.monitor.plist"
+            launchctl_calls: list[tuple[tuple[str, ...], bool]] = []
+            domain = cli._get_launchd_domain()
+            job_target = cli._get_launchd_job_target()
+
+            def _launchctl_side_effect(*call_args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+                launchctl_calls.append((call_args, check))
+                if call_args == ("print", job_target):
+                    return subprocess.CompletedProcess(["launchctl", *call_args], 0, "", "")
+                if call_args == ("bootout", domain, str(plist_path)):
+                    return subprocess.CompletedProcess(
+                        ["launchctl", *call_args],
+                        5,
+                        "",
+                        "Boot-out failed: 5: Input/output error",
+                    )
+                if call_args == ("bootout", job_target):
+                    return subprocess.CompletedProcess(
+                        ["launchctl", *call_args],
+                        3,
+                        "",
+                        "Boot-out failed: 3: No such process",
+                    )
+                return subprocess.CompletedProcess(["launchctl", *call_args], 0, "", "")
+
+            with patch.object(cli, "_launchctl_run", side_effect=_launchctl_side_effect):
+                cli._ensure_launchd_service_unloaded(plist_path)
+
+            self.assertEqual(
+                launchctl_calls,
+                [
+                    (("print", job_target), False),
+                    (("bootout", domain, str(plist_path)), False),
+                    (("bootout", job_target), False),
+                ],
+            )
 
     def test_cmd_service_start_bootstraps_launchd_job(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             plist_path = Path(tmpdir) / "com.fix-my-claw.monitor.plist"
             plist_path.write_text("plist", encoding="utf-8")
-            args = SimpleNamespace()
+            args = SimpleNamespace(config=str(Path(tmpdir) / "config.toml"))
             launchctl_calls: list[tuple[tuple[str, ...], bool]] = []
+            cfg = config_module.AppConfig(
+                monitor=config_module.MonitorConfig(state_dir=Path(tmpdir) / "state")
+            )
 
             def _launchctl_side_effect(*call_args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
                 launchctl_calls.append((call_args, check))
@@ -661,21 +830,59 @@ class TestGuiCliCommands(unittest.TestCase):
 
             with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
                 cli, "_get_launchd_plist_path", return_value=plist_path
-            ), patch.object(cli, "_bootout_launchd_service") as bootout_mock, patch.object(
+            ), patch.object(
+                cli, "_load_or_init_config", return_value=cfg
+            ), patch.object(
+                cli, "_generate_launchd_plist", return_value=b"<plist>updated</plist>"
+            ), patch.object(cli, "_ensure_launchd_service_unloaded") as unload_mock, patch.object(
                 cli, "_launchctl_run", side_effect=_launchctl_side_effect
             ), patch("sys.stdout", new=io.StringIO()):
                 code = cli.cmd_service_start(args)
 
             self.assertEqual(code, 0)
-            bootout_mock.assert_called_once_with(plist_path)
+            unload_mock.assert_called_once_with(plist_path)
+            self.assertEqual(plist_path.read_bytes(), b"<plist>updated</plist>")
             self.assertEqual(
                 launchctl_calls,
                 [
                     (("bootstrap", cli._get_launchd_domain(), str(plist_path)), True),
-                    (("enable", f"{cli._get_launchd_domain()}/{cli._get_launchd_label()}"), True),
-                    (("kickstart", "-k", f"{cli._get_launchd_domain()}/{cli._get_launchd_label()}"), True),
+                    (("enable", cli._get_launchd_job_target()), True),
+                    (("kickstart", "-k", cli._get_launchd_job_target()), True),
                 ],
             )
+
+    def test_cmd_service_stop_uses_idempotent_unload_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plist_path = Path(tmpdir) / "com.fix-my-claw.monitor.plist"
+            plist_path.write_text("plist", encoding="utf-8")
+            args = SimpleNamespace()
+
+            with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
+                cli, "_get_launchd_plist_path", return_value=plist_path
+            ), patch.object(cli, "_ensure_launchd_service_unloaded") as unload_mock, patch(
+                "sys.stdout", new=io.StringIO()
+            ):
+                code = cli.cmd_service_stop(args)
+
+            self.assertEqual(code, 0)
+            unload_mock.assert_called_once_with(plist_path)
+
+    def test_cmd_service_uninstall_uses_idempotent_unload_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plist_path = Path(tmpdir) / "com.fix-my-claw.monitor.plist"
+            plist_path.write_text("plist", encoding="utf-8")
+            args = SimpleNamespace()
+
+            with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
+                cli, "_get_launchd_plist_path", return_value=plist_path
+            ), patch.object(cli, "_ensure_launchd_service_unloaded") as unload_mock, patch(
+                "sys.stdout", new=io.StringIO()
+            ):
+                code = cli.cmd_service_uninstall(args)
+
+            self.assertEqual(code, 0)
+            unload_mock.assert_called_once_with(plist_path)
+            self.assertFalse(plist_path.exists())
 
 
 if __name__ == "__main__":

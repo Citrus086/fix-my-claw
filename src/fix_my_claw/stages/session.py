@@ -3,13 +3,14 @@
 This module contains stages that interact with OpenClaw sessions:
 - SessionPauseStage: Send soft pause message to sessions
 - SessionTerminateStage: Terminate existing sessions
+- SessionTerminateAssessmentStage: Recheck health after a hard stop
 - SessionResetStage: Create new sessions after termination
 """
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ..repair_types import (
     SessionStageData,
@@ -19,7 +20,7 @@ from ..repair_types import (
 )
 
 if TYPE_CHECKING:
-    from ..repair_types import RepairPipelineContext, StagePayload
+    from ..repair_types import RepairPipelineContext
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ class SessionPauseStage:
         return StageResult(
             name="pause",
             status="completed",
-            payload=SessionStageData(stage_name="pause", commands=commands),
+            payload=SessionStageData(commands=commands),
         )
 
 
@@ -97,7 +98,49 @@ class SessionTerminateStage:
         return StageResult(
             name="terminate",
             status="completed",
-            payload=SessionStageData(stage_name="terminate", commands=commands),
+            payload=SessionStageData(commands=commands),
+        )
+
+
+@dataclass(frozen=True)
+class SessionTerminateAssessmentStage:
+    """Stage that assesses system health after a hard stop.
+
+    This is used for queue-contamination-style incidents where `/stop`
+    should be allowed to settle before deciding whether `/new` is still needed.
+    """
+
+    def run(
+        self,
+        ctx: RepairPipelineContext,
+        *,
+        previous_stage: StageResult,
+    ) -> StageResult:
+        """Assess health after terminate.
+
+        Args:
+            ctx: Pipeline context.
+            previous_stage: The terminate stage result.
+
+        Returns:
+            StageResult with health evaluation and captured context.
+        """
+        from ..repair import _evaluate_with_context
+
+        payload = _require_stage_payload(previous_stage, SessionStageData)
+        if payload.commands and ctx.cfg.repair.session_stage_wait_seconds > 0:
+            time.sleep(ctx.cfg.repair.session_stage_wait_seconds)
+        evaluation, context = _evaluate_with_context(
+            ctx.cfg,
+            ctx.attempt_dir,
+            stage_name="after_terminate",
+        )
+        return StageResult(
+            name="terminate_check",
+            status="completed",
+            evaluation=evaluation,
+            context=context,
+            stop_reason="healthy_after_terminate" if evaluation.effective_healthy else "still_unhealthy_after_terminate",
         )
 
 
@@ -105,32 +148,32 @@ class SessionTerminateStage:
 class SessionResetStage:
     """Stage that creates new OpenClaw sessions after termination.
 
-    Optionally waits after the previous stage before creating new sessions.
+    Optionally waits after terminate before creating new sessions.
     """
 
     def run(
         self,
         ctx: RepairPipelineContext,
         *,
-        previous_stage: StageResult | None = None,
+        previous_stage: StageResult,
+        wait_before_reset: bool,
     ) -> StageResult:
         """Create new sessions.
 
         Args:
             ctx: Pipeline context.
-            previous_stage: Optional previous stage result for timing.
+            previous_stage: Terminate stage result.
+            wait_before_reset: Whether to wait after terminate before sending `/new`.
 
         Returns:
             StageResult with SessionStageData containing command records.
         """
         from ..repair import _run_session_command_stage
 
-        waited_before_seconds = 0
-        if previous_stage is not None:
+        if wait_before_reset:
             payload = _require_stage_payload(previous_stage, SessionStageData)
             if payload.commands and ctx.cfg.repair.session_stage_wait_seconds > 0:
                 time.sleep(ctx.cfg.repair.session_stage_wait_seconds)
-                waited_before_seconds = ctx.cfg.repair.session_stage_wait_seconds
         commands = _coerce_execution_records(
             _run_session_command_stage(
                 ctx.cfg,
@@ -142,9 +185,5 @@ class SessionResetStage:
         return StageResult(
             name="new",
             status="completed",
-            payload=SessionStageData(
-                stage_name="new",
-                commands=commands,
-                waited_before_seconds=waited_before_seconds,
-            ),
+            payload=SessionStageData(commands=commands),
         )

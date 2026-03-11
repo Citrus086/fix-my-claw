@@ -25,16 +25,20 @@ def backup_completed(archive_path: str) -> str:
 # Repair pipeline messages
 REPAIR_STARTING = (
     "fix-my-claw: 检测到异常，开始分层修复"
-    "（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop -> /new -> 官方结构修复）。"
+    "（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop，必要时再 /new -> 官方结构修复）。"
 )
 
 REPAIR_STARTING_MANUAL = (
     "fix-my-claw: 收到手动修复命令，开始分层修复"
-    "（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop -> /new -> 官方结构修复）。"
+    "（会话可达时先发送 PAUSE 保留现场；若仍异常，再升级到 /stop，必要时再 /new -> 官方结构修复）。"
 )
 
 REPAIR_RECOVERED_AFTER_PAUSE = (
     "fix-my-claw: 已发送 PAUSE 并完成复检，系统恢复健康，跳过 /stop、/new 与结构修复。"
+)
+
+REPAIR_RECOVERED_AFTER_STOP = (
+    "fix-my-claw: 已执行 /stop 并完成复检，系统恢复健康，跳过 /new 与结构修复。"
 )
 
 REPAIR_RECOVERED_BY_OFFICIAL = (
@@ -95,3 +99,15 @@ def ask_invalid_reply(remaining: int, yes_keywords: list[str] | None = None, no_
 def manual_repair_acknowledged(command: str) -> str:
     """Notification text when manual repair command is received."""
     return f"fix-my-claw: 收到手动修复命令「{command}」，立即开始修复流程。"
+
+
+def monitor_unhealthy_skipped(*, repair_disabled: bool = False, cooldown_remaining_seconds: int | None = None) -> str:
+    """Notification text when monitor sees an issue but does not run repair."""
+    if repair_disabled:
+        return "fix-my-claw: 检测到异常，但 repair.enabled=false，本轮不会自动修复，请人工介入。"
+    if cooldown_remaining_seconds is not None:
+        return (
+            "fix-my-claw: 检测到异常，但当前处于修复冷却期，"
+            f"剩余 {cooldown_remaining_seconds} 秒，本轮不会自动修复。"
+        )
+    return "fix-my-claw: 检测到异常，但本轮未执行自动修复，请人工介入。"

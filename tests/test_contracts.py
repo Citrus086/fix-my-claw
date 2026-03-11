@@ -57,6 +57,9 @@ class TestContractFixturesExist(unittest.TestCase):
     def test_service_status_fixture_exists(self) -> None:
         self.assertTrue((FIXTURES_DIR / "service.status.v1.json").exists())
 
+    def test_service_reconcile_fixture_exists(self) -> None:
+        self.assertTrue((FIXTURES_DIR / "service.reconcile.v1.json").exists())
+
 
 class TestContractFixturesHaveAPIVersion(unittest.TestCase):
     """Verify all fixtures contain api_version field."""
@@ -79,6 +82,10 @@ class TestContractFixturesHaveAPIVersion(unittest.TestCase):
 
     def test_service_status_has_api_version(self) -> None:
         fixture = load_fixture("service.status.v1.json")
+        self.assertEqual(fixture["api_version"], protocol_module.API_VERSION)
+
+    def test_service_reconcile_has_api_version(self) -> None:
+        fixture = load_fixture("service.reconcile.v1.json")
         self.assertEqual(fixture["api_version"], protocol_module.API_VERSION)
 
 
@@ -220,8 +227,31 @@ class TestServiceStatusFixtureStructure(unittest.TestCase):
 
     def test_service_status_has_required_fields(self) -> None:
         fixture = load_fixture("service.status.v1.json")
-        required = {"api_version", "installed", "running", "label", "plist_path", "domain"}
+        required = {
+            "api_version",
+            "installed",
+            "running",
+            "label",
+            "plist_path",
+            "domain",
+            "program_path",
+            "config_path",
+            "expected_program_path",
+            "expected_config_path",
+            "drifted",
+        }
         self.assertEqual(set(fixture.keys()), required)
+
+
+class TestServiceReconcileFixtureStructure(unittest.TestCase):
+    """Verify service reconcile fixture has required fields."""
+
+    def test_service_reconcile_has_required_fields(self) -> None:
+        fixture = load_fixture("service.reconcile.v1.json")
+        required = {"api_version", "action", "reasons", "service"}
+        self.assertEqual(set(fixture.keys()), required)
+        self.assertIsInstance(fixture["reasons"], list)
+        self.assertIsInstance(fixture["service"], dict)
 
 
 def update_fixtures() -> None:
@@ -363,9 +393,22 @@ def update_fixtures() -> None:
         label="com.fix-my-claw.monitor",
         plist_path="~/Library/LaunchAgents/com.fix-my-claw.monitor.plist",
         domain="gui/501",
+        program_path="~/.fix-my-claw/bin/fix-my-claw-service",
+        config_path="~/.fix-my-claw/config.toml",
+        expected_program_path="~/.fix-my-claw/bin/fix-my-claw-service",
+        expected_config_path="~/.fix-my-claw/config.toml",
+        drifted=False,
     )
     save_fixture("service.status.v1.json", service_data)
     print("  Updated: service.status.v1.json")
+
+    service_reconcile_data = protocol_module.build_service_reconcile_payload(
+        action="noop",
+        reasons=[],
+        service=service_data,
+    )
+    save_fixture("service.reconcile.v1.json", service_reconcile_data)
+    print("  Updated: service.reconcile.v1.json")
 
     print("Done!")
 

@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 import time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from string import Template
@@ -30,6 +31,7 @@ from .shared import (
 NOTIFY_LEVEL_ALL = "all"
 NOTIFY_LEVEL_IMPORTANT = "important"
 NOTIFY_LEVEL_CRITICAL = "critical"
+QUEUE_CONTAMINATION_REPAIR_REASON = "queue_contamination"
 
 _T = TypeVar("_T")
 
@@ -75,6 +77,154 @@ def _list_active_sessions(
         if isinstance(item, dict):
             out.append(item)
     return out
+
+
+def _load_recent_sessions_from_indexes(
+    cfg: AppConfig,
+    *,
+    active_minutes: int,
+    now_ms: int | None = None,
+) -> list[dict[str, Any]]:
+    agents_root = cfg.openclaw.state_dir / "agents"
+    if not agents_root.exists():
+        return []
+
+    allow_agents = set(cfg.repair.session_agents)
+    cutoff_ms = None
+    if active_minutes > 0:
+        current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        cutoff_ms = current_ms - (active_minutes * 60 * 1000)
+
+    sessions: list[dict[str, Any]] = []
+    for index_path in agents_root.glob("*/sessions/sessions.json"):
+        try:
+            raw = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+
+        default_agent_id = index_path.parent.parent.name
+        for key, item in raw.items():
+            if not isinstance(item, dict):
+                continue
+            agent_id = _parse_agent_id_from_session_key(str(key)) or str(item.get("agentId") or default_agent_id).strip()
+            if allow_agents and agent_id not in allow_agents:
+                continue
+            updated_at_raw = item.get("updatedAt")
+            try:
+                updated_at = int(updated_at_raw)
+            except (TypeError, ValueError):
+                updated_at = 0
+            if cutoff_ms is not None and updated_at < cutoff_ms:
+                continue
+            sessions.append(
+                {
+                    "key": str(key),
+                    "agentId": agent_id,
+                    **item,
+                }
+            )
+
+    sessions.sort(key=lambda item: int(item.get("updatedAt") or 0), reverse=True)
+    return sessions
+
+
+def _resolve_transcript_path(cfg: AppConfig, session: dict[str, Any]) -> Path | None:
+    session_file = str(session.get("sessionFile", "")).strip()
+    if session_file:
+        candidate = Path(session_file).expanduser()
+        if candidate.exists():
+            return candidate.resolve()
+
+    agent_id = str(session.get("agentId", "")).strip()
+    session_id = str(session.get("sessionId", "")).strip()
+    if not agent_id or not session_id:
+        return None
+
+    candidate = cfg.openclaw.state_dir / "agents" / agent_id / "sessions" / f"{session_id}.jsonl"
+    if candidate.exists():
+        return candidate.resolve()
+    return None
+
+
+def _read_transcript_entries(path: Path, *, max_entries: int) -> list[dict[str, Any]]:
+    rows: deque[dict[str, Any]] = deque(maxlen=max_entries)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    rows.append(payload)
+    except OSError:
+        return []
+    return list(rows)
+
+
+def _probe_session_transcripts(
+    cfg: AppConfig,
+    *,
+    list_active_sessions_fn: Callable[..., list[dict[str, Any]]] | None = None,
+    load_recent_sessions_from_indexes_fn: Callable[..., list[dict[str, Any]]] | None = None,
+    resolve_transcript_path_fn: Callable[[AppConfig, dict[str, Any]], Path | None] | None = None,
+    read_transcript_entries_fn: Callable[[Path], list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    list_active_sessions_fn = _resolve_default(list_active_sessions_fn, _list_active_sessions)
+    load_recent_sessions_from_indexes_fn = _resolve_default(
+        load_recent_sessions_from_indexes_fn,
+        _load_recent_sessions_from_indexes,
+    )
+    resolve_transcript_path_fn = _resolve_default(resolve_transcript_path_fn, _resolve_transcript_path)
+    if read_transcript_entries_fn is None:
+        max_entries = max(200, cfg.anomaly_guard.window_lines * 8)
+
+        def _reader(path: Path) -> list[dict[str, Any]]:
+            return _read_transcript_entries(path, max_entries=max_entries)
+
+        read_transcript_entries_fn = _reader
+
+    sessions = list_active_sessions_fn(cfg, active_minutes=cfg.repair.session_active_minutes)
+    if not sessions:
+        sessions = load_recent_sessions_from_indexes_fn(
+            cfg,
+            active_minutes=cfg.repair.session_active_minutes,
+        )
+
+    transcripts: list[dict[str, Any]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for session in sessions:
+        agent_id = str(session.get("agentId", "")).strip()
+        session_id = str(session.get("sessionId", "")).strip()
+        if not session_id:
+            continue
+        pair = (agent_id, session_id)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+
+        transcript_path = resolve_transcript_path_fn(cfg, session)
+        if transcript_path is None:
+            continue
+        entries = read_transcript_entries_fn(transcript_path)
+        if not entries:
+            continue
+        transcripts.append(
+            {
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "session_key": str(session.get("key", "")).strip(),
+                "updated_at": session.get("updatedAt"),
+                "transcript_path": str(transcript_path),
+                "entries": entries,
+            }
+        )
+    return transcripts
 
 
 def _backup_openclaw_state(
@@ -290,11 +440,13 @@ def _evaluate_health(
     probe_health_fn: Callable[..., Any] | None = None,
     probe_status_fn: Callable[..., Any] | None = None,
     probe_logs_fn: Callable[..., CmdResult] | None = None,
+    probe_session_transcripts_fn: Callable[..., list[dict[str, Any]]] | None = None,
     analyze_anomaly_guard_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> HealthEvaluation:
     probe_health_fn = _resolve_default(probe_health_fn, probe_health)
     probe_status_fn = _resolve_default(probe_status_fn, probe_status)
     probe_logs_fn = _resolve_default(probe_logs_fn, probe_logs)
+    probe_session_transcripts_fn = _resolve_default(probe_session_transcripts_fn, _probe_session_transcripts)
     if analyze_anomaly_guard_fn is None:
         from .anomaly_guard import _analyze_anomaly_guard
 
@@ -316,12 +468,16 @@ def _evaluate_health(
     if not probe_healthy:
         reason = "probe_failed"
     elif cfg.anomaly_guard.enabled:
-        if logs_probe is None:
-            raise RuntimeError("anomaly guard requires a logs probe")
-        anomaly_guard = analyze_anomaly_guard_fn(cfg, logs=logs_probe)
+        transcripts = probe_session_transcripts_fn(cfg)
+        if transcripts:
+            anomaly_guard = analyze_anomaly_guard_fn(cfg, transcripts=transcripts, logs=logs_probe)
+        else:
+            if logs_probe is None:
+                raise RuntimeError("anomaly guard requires a logs probe")
+            anomaly_guard = analyze_anomaly_guard_fn(cfg, logs=logs_probe)
         if anomaly_guard.get("triggered"):
             effective_healthy = False
-            reason = "anomaly_guard"
+            reason = _anomaly_guard_reason(anomaly_guard)
     return HealthEvaluation(
         health_probe=health,
         status_probe=status,
@@ -331,6 +487,20 @@ def _evaluate_health(
         effective_healthy=effective_healthy,
         reason=reason,
     )
+
+
+def _anomaly_guard_reason(anomaly_guard: dict[str, Any] | None) -> str | None:
+    if not isinstance(anomaly_guard, dict) or not anomaly_guard.get("triggered"):
+        return None
+    detectors = anomaly_guard.get("detectors")
+    if isinstance(detectors, list):
+        for preferred in ("discord_identity_degraded", "self_sender_ingress"):
+            for detector in detectors:
+                if not isinstance(detector, dict):
+                    continue
+                if detector.get("triggered") and detector.get("detector") == preferred:
+                    return QUEUE_CONTAMINATION_REPAIR_REASON
+    return "anomaly_guard"
 
 
 def _run_official_steps(

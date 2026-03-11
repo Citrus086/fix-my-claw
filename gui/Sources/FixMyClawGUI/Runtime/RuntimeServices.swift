@@ -6,7 +6,7 @@ import Foundation
 @MainActor
 protocol StatusServiceProtocol: Sendable {
     func getStatus(configPath: String?) async throws -> StatusPayload
-    func getServiceStatus() async throws -> ServiceStatus
+    func getServiceStatus(configPath: String?) async throws -> ServiceStatus
     func checkHealth(configPath: String?) async throws -> CheckPayload
 }
 
@@ -37,8 +37,8 @@ protocol ConfigServiceProtocol: Sendable {
 @MainActor
 protocol DaemonServiceProtocol: Sendable {
     func installService(configPath: String?) async throws
-    func uninstallService() async throws
-    func startService() async throws
+    func startService(configPath: String?) async throws
+    func reconcileService(configPath: String?) async throws -> ServiceReconcileResult
     func stopService() async throws
 }
 
@@ -98,6 +98,7 @@ final class RuntimeServices {
     private let approvalDecisionFileName = "ai_approval.decision.json"
     private let repairProgressFileName = "repair_progress.json"
     private let repairResultFileName = "repair_result.json"
+    private let notificationEventsFileName = "notification_events.json"
     
     private var configPath: String { ConfigManager.shared.defaultConfigPath }
     
@@ -124,8 +125,8 @@ extension RuntimeServices: StatusServiceProtocol {
         try await cli.getStatus(configPath: configPath ?? self.configPath)
     }
     
-    func getServiceStatus() async throws -> ServiceStatus {
-        try await cli.getServiceStatus()
+    func getServiceStatus(configPath: String?) async throws -> ServiceStatus {
+        try await cli.getServiceStatus(configPath: configPath ?? self.configPath)
     }
     
     func checkHealth(configPath: String?) async throws -> CheckPayload {
@@ -150,6 +151,15 @@ extension RuntimeServices: RepairServiceProtocol {
         let url = stateDirectoryURL().appendingPathComponent(repairResultFileName)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(PersistedRepairResult.self, from: data)
+    }
+
+    func getNotificationEvents() -> [PersistedNotificationEvent] {
+        let url = stateDirectoryURL().appendingPathComponent(notificationEventsFileName)
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        guard let store = try? JSONDecoder().decode(PersistedNotificationEventStore.self, from: data) else {
+            return []
+        }
+        return store.events.sorted(by: { $0.sequence < $1.sequence })
     }
 }
 
@@ -247,12 +257,12 @@ extension RuntimeServices: DaemonServiceProtocol {
         try await cli.installService(configPath: configPath ?? self.configPath)
     }
     
-    func uninstallService() async throws {
-        try await cli.uninstallService()
+    func startService(configPath: String?) async throws {
+        try await cli.startService(configPath: configPath ?? self.configPath)
     }
-    
-    func startService() async throws {
-        try await cli.startService()
+
+    func reconcileService(configPath: String?) async throws -> ServiceReconcileResult {
+        try await cli.reconcileService(configPath: configPath ?? self.configPath)
     }
     
     func stopService() async throws {

@@ -35,9 +35,6 @@ struct MenuBuilder {
             addAiApprovalSection(to: menu, target: target)
         }
         
-        // 服务控制
-        addServiceSection(to: menu, state: state, target: target)
-        
         // 监控控制
         addMonitoringSection(to: menu, state: state, target: target)
         
@@ -132,48 +129,6 @@ struct MenuBuilder {
         menu.addItem(.separator())
     }
     
-    private static func addServiceSection(to menu: NSMenu, state: MenuState, target: MenuBarController) {
-        guard let serviceStatus = state.serviceStatus else { return }
-        
-        if serviceStatus.installed {
-            if serviceStatus.running {
-                let stopServiceItem = NSMenuItem(
-                    title: "⏹️ 停止后台服务",
-                    action: #selector(MenuBarController.stopService),
-                    keyEquivalent: ""
-                )
-                stopServiceItem.target = target
-                menu.addItem(stopServiceItem)
-            } else {
-                let startServiceItem = NSMenuItem(
-                    title: "▶️ 启动后台服务",
-                    action: #selector(MenuBarController.startService),
-                    keyEquivalent: ""
-                )
-                startServiceItem.target = target
-                menu.addItem(startServiceItem)
-            }
-            
-            let uninstallServiceItem = NSMenuItem(
-                title: "🗑️ 卸载后台服务",
-                action: #selector(MenuBarController.uninstallService),
-                keyEquivalent: ""
-            )
-            uninstallServiceItem.target = target
-            menu.addItem(uninstallServiceItem)
-        } else {
-            let installServiceItem = NSMenuItem(
-                title: "📦 安装后台服务",
-                action: #selector(MenuBarController.installService),
-                keyEquivalent: ""
-            )
-            installServiceItem.target = target
-            menu.addItem(installServiceItem)
-        }
-        
-        menu.addItem(.separator())
-    }
-    
     private static func addMonitoringSection(to menu: NSMenu, state: MenuState, target: MenuBarController) {
         switch state.effectiveState {
         case .healthy, .unhealthy(_):
@@ -238,35 +193,56 @@ struct MenuBuilder {
             )
             setupItem.target = target
             menu.addItem(setupItem)
-            return
+        } else {
+            // 立即检查
+            let checkItem = NSMenuItem(
+                title: "🔍 立即检查",
+                action: #selector(MenuBarController.performCheck),
+                keyEquivalent: "r"
+            )
+            checkItem.target = target
+            menu.addItem(checkItem)
+            
+            // 立即修复（仅在异常状态显示）
+            if case .pausedUnhealthy(_) = state.effectiveState {
+                let repairItem = NSMenuItem(
+                    title: "🩹 立即修复",
+                    action: #selector(MenuBarController.performRepair),
+                    keyEquivalent: ""
+                )
+                repairItem.target = target
+                menu.addItem(repairItem)
+            } else if case .unhealthy(_) = state.effectiveState {
+                let repairItem = NSMenuItem(
+                    title: "🩹 立即修复 (将暂停后台服务)",
+                    action: #selector(MenuBarController.performRepair),
+                    keyEquivalent: ""
+                )
+                repairItem.target = target
+                menu.addItem(repairItem)
+            }
         }
 
-        // 立即检查
-        let checkItem = NSMenuItem(
-            title: "🔍 立即检查",
-            action: #selector(MenuBarController.performCheck),
-            keyEquivalent: "r"
+        let forceRepairItem = NSMenuItem(
+            title: "🛠️ 强制修复一次",
+            action: #selector(MenuBarController.performForceRepair),
+            keyEquivalent: ""
         )
-        checkItem.target = target
-        menu.addItem(checkItem)
-        
-        // 立即修复（仅在异常状态显示）
-        if case .pausedUnhealthy(_) = state.effectiveState {
-            let repairItem = NSMenuItem(
-                title: "🩹 立即修复",
-                action: #selector(MenuBarController.performRepair),
-                keyEquivalent: ""
-            )
-            repairItem.target = target
-            menu.addItem(repairItem)
-        } else if case .unhealthy(_) = state.effectiveState {
-            let repairItem = NSMenuItem(
-                title: "🩹 立即修复 (将暂停后台服务)",
-                action: #selector(MenuBarController.performRepair),
-                keyEquivalent: ""
-            )
-            repairItem.target = target
-            menu.addItem(repairItem)
+        forceRepairItem.target = target
+        forceRepairItem.isEnabled = canForceRepair(from: state)
+        menu.addItem(forceRepairItem)
+    }
+
+    private static func canForceRepair(from state: MenuState) -> Bool {
+        if state.isLoading {
+            return false
+        }
+
+        switch state.effectiveState {
+        case .repairing(_), .awaitingApproval(_), .setupRequired, .noConfig:
+            return false
+        case .uninitialized, .unknown, .healthy, .unhealthy(_), .pausedHealthy, .pausedUnhealthy(_), .checking:
+            return true
         }
     }
     
@@ -324,7 +300,7 @@ struct MenuBuilder {
         
         let quitItem = NSMenuItem(
             title: "退出",
-            action: #selector(MenuBarController.quitWithServiceStop),
+            action: #selector(MenuBarController.quit),
             keyEquivalent: "q"
         )
         quitItem.target = target

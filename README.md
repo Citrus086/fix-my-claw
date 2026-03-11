@@ -14,7 +14,7 @@ A plug-and-play watchdog for OpenClaw — keep it healthy automatically.
 ## ✨ Highlights
 
 - 🩹 **Auto-heal**: detects unhealthy states and runs recovery steps automatically.
-- 🧱 **Layered recovery**: try a soft `PAUSE` first when the session is still reachable, then escalate to `/stop`, `/new`, and official structural repair only if needed.
+- 🧱 **Layered recovery**: try a soft `PAUSE` first when the session is still reachable, then escalate to `/stop`, use `/new` only if a fresh session is still needed, and run official structural repair only if needed.
 - 🔁 **Anomaly guard**: detects "healthy probes but agent ping-pong/repeat loops" from recent logs.
 - 🔔 **Human approval gate**: optional Discord notification + `yes/no` reply before enabling Codex repair.
 - 🧾 **Operator-friendly**: writes a timestamped incident folder under `~/.fix-my-claw/attempts/` for debugging.
@@ -74,7 +74,8 @@ fix-my-claw stop    # disable monitoring; monitor loops idle
 fix-my-claw status  # show whether monitoring is enabled plus persisted state
 fix-my-claw up      # init (if needed) + monitor
 fix-my-claw check   # one-time probe
-fix-my-claw repair  # one-time recovery attempt
+fix-my-claw repair       # manual repair: always run the repair workflow once
+fix-my-claw auto-repair  # automatic repair: skip if already healthy
 fix-my-claw monitor # long-running loop (requires config)
 fix-my-claw init    # write default config
 ```
@@ -89,8 +90,8 @@ flowchart TD
   C -->|unhealthy| E["soft pause (PAUSE) when session is reachable"]
   E --> F{"healthy after recheck?"}
   F -->|yes| D
-  F -->|no| G["command stop (/stop)"]
-  G --> H["reset context (/new)"]
+  F -->|no| G["hard stop (/stop)"]
+  G --> H["reset context (/new if still needed)"]
   H --> I["official recovery steps"]
   I --> J{"healthy?"}
   J -->|yes| D
@@ -126,7 +127,7 @@ Tip: if `openclaw` isn’t on `PATH` under systemd/launchd, set `[openclaw].comm
 Two options in `deploy/systemd/`:
 
 - **Option A (recommended)**: `fix-my-claw.service` runs a long-lived monitor loop.
-- **Option B**: `fix-my-claw-oneshot.service` + `fix-my-claw.timer` runs `fix-my-claw repair` periodically (cron-style).
+- **Option B**: `fix-my-claw-oneshot.service` + `fix-my-claw.timer` runs `fix-my-claw auto-repair` periodically (cron-style).
 
 Example (Option A):
 
@@ -170,10 +171,12 @@ If you already installed `fix-my-claw` elsewhere, pass that absolute binary path
 Behavior:
 
 - Install enables monitoring and bootstraps the launchd job immediately.
+- The launchd job always points at the stable path `~/.fix-my-claw/bin/fix-my-claw-service`.
 - `fix-my-claw start` turns monitoring on.
 - `fix-my-claw stop` turns monitoring off. The launchd job stays loaded and idles until you unload it manually or uninstall.
+- `fix-my-claw service reconcile --config ~/.fix-my-claw/config.toml` rewrites the stable service binary/plist and restarts only when drift is detected.
 
-If the virtualenv path changes later, rerun `pip install -e .` if needed and then rerun `deploy/launchd/install.sh`.
+If the virtualenv path changes later, rerun `pip install -e .` if needed and then run `fix-my-claw service reconcile --config ~/.fix-my-claw/config.toml` (or rerun `deploy/launchd/install.sh --force`).
 
 ## 🖥️ macOS GUI Application
 
@@ -237,7 +240,7 @@ git pull
 pip install .
 ```
 
-For both modes, if the `fix-my-claw` binary path changed, rerun the matching `deploy/systemd/install.sh` or `deploy/launchd/install.sh`.
+If the `fix-my-claw` binary path changed, systemd still needs the matching `deploy/systemd/install.sh`; launchd can be realigned with `fix-my-claw service reconcile --config ~/.fix-my-claw/config.toml` or by starting the GUI once.
 
 One-click uninstall:
 

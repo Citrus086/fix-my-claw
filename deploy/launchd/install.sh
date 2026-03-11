@@ -72,24 +72,8 @@ DOMAIN="gui/$(id -u)"
 CONFIG_PATH="$HOME/.fix-my-claw/config.toml"
 PLIST_NAME="com.fix-my-claw.monitor.plist"
 LABEL="com.fix-my-claw.monitor"
-SRC_PLIST="$SCRIPT_DIR/$PLIST_NAME"
 DST_PLIST="$PLIST_DIR/$PLIST_NAME"
-
-escape_sed_replacement() {
-  printf '%s' "$1" | sed -e 's/[&|]/\\&/g'
-}
-
-start_watchdog_job() {
-  launchctl bootout "$DOMAIN" "$DST_PLIST" >/dev/null 2>&1 || launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-  launchctl bootstrap "$DOMAIN" "$DST_PLIST"
-  launchctl enable "$DOMAIN/$LABEL"
-  launchctl kickstart -k "$DOMAIN/$LABEL"
-}
-
-if [[ ! -f "$SRC_PLIST" ]]; then
-  echo "template not found: $SRC_PLIST" >&2
-  exit 1
-fi
+STABLE_SERVICE_BIN="$HOME/.fix-my-claw/bin/fix-my-claw-service"
 
 if [[ -e "$DST_PLIST" && $FORCE -eq 0 ]]; then
   echo "exists: $DST_PLIST (use --force to overwrite)" >&2
@@ -99,24 +83,23 @@ fi
 mkdir -p "$PLIST_DIR"
 "$FIX_MY_CLAW_BIN" init --config "$CONFIG_PATH" >/dev/null
 "$FIX_MY_CLAW_BIN" start --config "$CONFIG_PATH" >/dev/null
-BIN_ESCAPED="$(escape_sed_replacement "$FIX_MY_CLAW_BIN")"
-CONFIG_ESCAPED="$(escape_sed_replacement "$CONFIG_PATH")"
-sed \
-  -e "s|@FIX_MY_CLAW_BIN@|$BIN_ESCAPED|g" \
-  -e "s|@CONFIG_PATH@|$CONFIG_ESCAPED|g" \
-  "$SRC_PLIST" > "$DST_PLIST"
-
-start_watchdog_job
+if [[ $FORCE -eq 1 ]]; then
+  "$FIX_MY_CLAW_BIN" service reconcile --config "$CONFIG_PATH" >/dev/null
+else
+  "$FIX_MY_CLAW_BIN" service install --config "$CONFIG_PATH" >/dev/null
+fi
 
 cat <<EOF
 Installed launchd job: $DST_PLIST
 Config: $CONFIG_PATH
-fix-my-claw executable: $FIX_MY_CLAW_BIN
+Install-time CLI: $FIX_MY_CLAW_BIN
+Stable service executable: $STABLE_SERVICE_BIN
 
 Monitoring is enabled by default. Control it with:
   fix-my-claw status --config "$CONFIG_PATH"
   fix-my-claw stop --config "$CONFIG_PATH"
   fix-my-claw start --config "$CONFIG_PATH"
+  fix-my-claw service reconcile --config "$CONFIG_PATH"
 
 Check status:
   launchctl print "$DOMAIN/$LABEL"

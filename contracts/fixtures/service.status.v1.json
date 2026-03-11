@@ -4,5 +4,10 @@
   "running": true,
   "label": "com.fix-my-claw.monitor",
   "plist_path": "~/Library/LaunchAgents/com.fix-my-claw.monitor.plist",
-  "domain": "gui/501"
+  "domain": "gui/501",
+  "program_path": "~/.fix-my-claw/bin/fix-my-claw-service",
+  "config_path": "~/.fix-my-claw/config.toml",
+  "expected_program_path": "~/.fix-my-claw/bin/fix-my-claw-service",
+  "expected_config_path": "~/.fix-my-claw/config.toml",
+  "drifted": false
 }

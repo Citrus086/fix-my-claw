@@ -16,7 +16,12 @@ from .base import RepairStage, StageWithProgress, write_stage_progress
 from .final import FinalAssessmentStage
 from .official import OfficialRepairStage
 from .pause import PauseAssessmentStage
-from .session import SessionPauseStage, SessionResetStage, SessionTerminateStage
+from .session import (
+    SessionPauseStage,
+    SessionResetStage,
+    SessionTerminateAssessmentStage,
+    SessionTerminateStage,
+)
 
 __all__ = [
     # Base
@@ -26,6 +31,7 @@ __all__ = [
     # Session stages
     "SessionPauseStage",
     "SessionTerminateStage",
+    "SessionTerminateAssessmentStage",
     "SessionResetStage",
     # Pause stage
     "PauseAssessmentStage",

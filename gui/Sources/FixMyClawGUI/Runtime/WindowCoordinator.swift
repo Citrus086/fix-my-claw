@@ -1,13 +1,6 @@
 import AppKit
 import SwiftUI
 
-@MainActor
-enum WelcomeDialogChoice {
-    case installService
-    case remindLater
-    case manualOnly
-}
-
 /// WindowCoordinator 收敛 GUI 的窗口和通用弹窗管理。
 /// Step 4 起改为统一的非阻塞 alert presenter + 设置窗口生命周期管理。
 @MainActor
@@ -37,20 +30,6 @@ final class WindowCoordinator {
                 style: content.style,
                 buttonTitles: ["确定"]
             ) { _ in }
-        )
-    }
-
-    func presentUninstallConfirmation(onDecision: @escaping @MainActor (Bool) -> Void) {
-        alertPresenter.present(
-            AlertRequest(
-                windowTitle: "fix-my-claw",
-                messageText: "确认卸载",
-                informativeText: "确定要卸载后台监控服务吗？",
-                style: .warning,
-                buttonTitles: ["卸载", "取消"]
-            ) { response in
-                onDecision(response == .alertFirstButtonReturn)
-            }
         )
     }
 
@@ -168,31 +147,6 @@ final class WindowCoordinator {
             NSApplication.AboutPanelOptionKey.applicationName: "fix-my-claw GUI",
             NSApplication.AboutPanelOptionKey.applicationVersion: "0.1.0",
         ])
-    }
-
-    func presentWelcomeDialog(onChoice: @escaping @MainActor (WelcomeDialogChoice) -> Void) {
-        alertPresenter.present(
-            AlertRequest(
-                windowTitle: "fix-my-claw",
-                messageText: "欢迎使用 fix-my-claw",
-                informativeText: """
-                fix-my-claw 可以监控 OpenClaw 并在检测到异常时自动修复。
-
-                要启用 24/7 后台监控，请安装后台服务。如果不安装，你也可以通过菜单栏手动触发检查和修复。
-                """,
-                style: .informational,
-                buttonTitles: ["安装后台服务", "稍后安装", "仅手动控制"]
-            ) { response in
-                switch response {
-                case .alertFirstButtonReturn:
-                    onChoice(.installService)
-                case .alertThirdButtonReturn:
-                    onChoice(.manualOnly)
-                default:
-                    onChoice(.remindLater)
-                }
-            }
-        )
     }
 
     private func errorPresentation(for alert: RuntimeAlert) -> (title: String, message: String, style: NSAlert.Style) {

@@ -11,4 +11,4 @@ Type=oneshot
 
 Environment=PYTHONUNBUFFERED=1
 # Render @FIX_MY_CLAW_BIN@ and @CONFIG_PATH@ before installing.
-ExecStart=@FIX_MY_CLAW_BIN@ repair --config @CONFIG_PATH@
+ExecStart=@FIX_MY_CLAW_BIN@ auto-repair --config @CONFIG_PATH@

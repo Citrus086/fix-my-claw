@@ -67,6 +67,18 @@ final class PayloadDecodingTests: XCTestCase {
         XCTAssertEqual(status.installed, true)
         XCTAssertEqual(status.running, true)
         XCTAssertEqual(status.label, "com.fix-my-claw.monitor")
+        XCTAssertEqual(status.programPath, "~/.fix-my-claw/bin/fix-my-claw-service")
+        XCTAssertEqual(status.expectedProgramPath, "~/.fix-my-claw/bin/fix-my-claw-service")
+        XCTAssertFalse(status.drifted)
+    }
+
+    func testContract_ServiceReconcileFixture() throws {
+        let result = try FixtureLoader.load(ServiceReconcileResult.self, from: "service.reconcile.v1.json")
+
+        XCTAssertEqual(result.action, "noop")
+        XCTAssertEqual(result.reasons, [])
+        XCTAssertEqual(result.service.expectedConfigPath, "~/.fix-my-claw/config.toml")
+        XCTAssertFalse(result.service.drifted)
     }
 
     func testContract_AllFixturesHaveValidAPIVersion() throws {
@@ -76,6 +88,7 @@ final class PayloadDecodingTests: XCTestCase {
             "check.v1.json",
             "repair.v1.json",
             "service.status.v1.json",
+            "service.reconcile.v1.json",
         ]
 
         for fixtureName in fixtures {
@@ -133,6 +146,35 @@ final class PayloadDecodingTests: XCTestCase {
         XCTAssertEqual(result.details.aiDecision?.asked, true)
         XCTAssertNil(result.details.aiDecision?.decision)
         XCTAssertEqual(result.details.aiDecision?.source, "discord")
+    }
+
+    func testNotificationEventStoreDecodesLocalNotificationPayload() throws {
+        let payload = """
+        {
+          "events": [
+            {
+              "sequence": 7,
+              "event_id": "evt-7",
+              "timestamp": 1709520000.0,
+              "kind": "repair_result",
+              "source": "repair",
+              "level": "important",
+              "message_text": "fix-my-claw: repaired",
+              "local_title": "✅ 修复成功",
+              "local_body": "系统恢复健康。",
+              "dedupe_key": "attempt:/tmp/run-1"
+            }
+          ]
+        }
+        """
+
+        let store = try decode(PersistedNotificationEventStore.self, from: payload)
+
+        XCTAssertEqual(store.events.count, 1)
+        XCTAssertEqual(store.events.first?.sequence, 7)
+        XCTAssertEqual(store.events.first?.kind, "repair_result")
+        XCTAssertEqual(store.events.first?.localTitle, "✅ 修复成功")
+        XCTAssertEqual(store.events.first?.localBody, "系统恢复健康。")
     }
 
     func testTopLevelAPIVersionValidationAllowsSupportedVersion() throws {

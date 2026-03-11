@@ -44,7 +44,7 @@ class AiDecisionStage:
         Returns:
             StageResult with AiDecision payload.
         """
-        from ..repair import _ai_decision_notification_text, _ask_user_enable_ai, _notify_send_with_level, write_repair_progress
+        from ..repair import _ai_decision_notification_text, _ask_user_enable_ai, _dispatch_notification, write_repair_progress
 
         write_repair_progress(
             ctx.cfg.monitor.state_dir,
@@ -66,7 +66,15 @@ class AiDecisionStage:
             status="completed",
             payload=payload,
             notification=(
-                _notify_send_with_level(ctx.cfg, notification_text, NOTIFY_LEVEL_ALL, silent=False)
+                _dispatch_notification(
+                    ctx.cfg,
+                    kind="ai_approval_status",
+                    source="ai_approval",
+                    text=notification_text,
+                    level=NOTIFY_LEVEL_ALL,
+                    silent=False,
+                    dedupe_key=f"ai_approval_status:{ctx.attempt_dir.resolve()}:{payload.decision}",
+                )
                 if notification_text is not None
                 else None
             ),
@@ -90,7 +98,7 @@ class BackupStage:
         Returns:
             StageResult with BackupArtifact payload.
         """
-        from ..repair import _backup_openclaw_state, _notify_send_with_level, write_repair_progress
+        from ..repair import _backup_openclaw_state, _dispatch_notification, write_repair_progress
 
         write_repair_progress(
             ctx.cfg.monitor.state_dir,
@@ -123,11 +131,14 @@ class BackupStage:
             name="backup",
             status="completed",
             payload=artifact,
-            notification=_notify_send_with_level(
+            notification=_dispatch_notification(
                 ctx.cfg,
-                backup_completed(artifact.archive),
-                NOTIFY_LEVEL_IMPORTANT,
+                kind="ai_approval_status",
+                source="ai_approval",
+                text=backup_completed(artifact.archive),
+                level=NOTIFY_LEVEL_IMPORTANT,
                 silent=False,
+                dedupe_key=f"ai_approval_status:{ctx.attempt_dir.resolve()}:backup_completed",
             ),
         )
 
@@ -163,7 +174,7 @@ class AiRepairStage:
         return StageResult(
             name=f"ai_{stage_suffix}",
             status="completed",
-            payload=AiRepairStageData(stage_name=stage_suffix, result=result),
+            payload=AiRepairStageData(result=result),
             evaluation=evaluation,
             context=context,
             used_ai=True,

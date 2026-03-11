@@ -10,6 +10,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let windowCoordinator = WindowCoordinator.shared
     private var statusItem: NSStatusItem?
     private var cancellables = Set<AnyCancellable>()
+    private var terminationInProgress = false
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -19,6 +20,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         manager.stop()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationInProgress {
+            return .terminateNow
+        }
+        terminationInProgress = true
+        Task { @MainActor in
+            await manager.prepareForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+            terminationInProgress = false
+        }
+        return .terminateLater
     }
     
     private func setupStatusItem() {
@@ -68,32 +82,17 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     @objc func performRepair() {
         manager.performRepair()
     }
+
+    @objc func performForceRepair() {
+        manager.performRepair(force: true)
+    }
     
     @objc func showPendingApproval() {
         manager.showPendingApprovalDialog()
     }
     
-    @objc func installService() {
-        manager.installService()
-    }
-    
     @objc func createDefaultConfig() {
         manager.createDefaultConfig()
-    }
-    
-    @objc func uninstallService() {
-        windowCoordinator.presentUninstallConfirmation { [weak self] confirmed in
-            guard confirmed else { return }
-            self?.manager.uninstallService()
-        }
-    }
-    
-    @objc func startService() {
-        manager.startService()
-    }
-    
-    @objc func stopService() {
-        manager.stopService()
     }
     
     @objc func openLog() {
@@ -121,7 +120,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         windowCoordinator.showAbout()
     }
     
-    @objc func quitWithServiceStop() {
-        manager.stopServiceThenQuit()
+    @objc func quit() {
+        manager.quit()
     }
 }

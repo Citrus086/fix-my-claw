@@ -16,6 +16,7 @@ from typing import Any
 
 from .config import AppConfig
 from .health import HealthEvaluation
+from .notification_events import emit_repair_result_event
 from .repair_types import (
     AiDecision,
     BackupArtifact,
@@ -38,6 +39,7 @@ class RepairMachineState(str, Enum):
     RUN_PAUSE = "run_pause"
     RUN_PAUSE_ASSESSMENT = "run_pause_assessment"
     RUN_TERMINATE = "run_terminate"
+    RUN_TERMINATE_ASSESSMENT = "run_terminate_assessment"
     RUN_RESET = "run_reset"
     RUN_OFFICIAL = "run_official"
     CHECK_OFFICIAL_RESULT = "check_official_result"
@@ -70,7 +72,7 @@ class RepairRuntimeHooks:
     collect_context_fn: Callable[..., dict[str, Any]]
     context_logs_timeout_seconds_fn: Callable[[AppConfig], int]
     evaluate_health_fn: Callable[..., HealthEvaluation]
-    notify_send_with_level_fn: Callable[..., dict[str, Any] | None]
+    dispatch_notification_fn: Callable[..., dict[str, Any] | None]
     now_ts_fn: Callable[[], int]
     require_stage_payload_fn: Callable[[StageResult, type[Any]], Any]
     result_from_outcome_fn: Callable[..., RepairResult]
@@ -84,6 +86,7 @@ class RepairMessageHooks:
     repair_starting_message: str
     repair_starting_manual_message: str
     recovered_after_pause_message: str
+    recovered_after_stop_message: str
     recovered_by_official_message: str
     ai_disabled_message: str
     ai_rate_limited_message: str
@@ -102,6 +105,7 @@ class RepairStageHooks:
     session_pause_stage_cls: type[Any]
     pause_assessment_stage_cls: type[Any]
     session_terminate_stage_cls: type[Any]
+    terminate_assessment_stage_cls: type[Any]
     session_reset_stage_cls: type[Any]
     official_repair_stage_cls: type[Any]
     ai_decision_stage_cls: type[Any]
@@ -123,6 +127,8 @@ class RepairStateMachine:
     store: StateStore
     force: bool
     reason: str | None
+    manual_start: bool
+    reassess_after_terminate: bool
     hooks: RepairStateMachineHooks
     state: RepairMachineState = RepairMachineState.CHECK_INITIAL_HEALTH
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("fix_my_claw.repair"))
@@ -160,6 +166,7 @@ class RepairStateMachine:
             self.cfg.monitor.state_dir,
             result=self.terminal_result.to_json(),
         )
+        emit_repair_result_event(self.cfg.monitor.state_dir, result=self.terminal_result)
         return self.terminal_result
 
     def _advance(self) -> RepairMachineState:
@@ -180,6 +187,8 @@ class RepairStateMachine:
                 return self._run_pause_assessment()
             case RepairMachineState.RUN_TERMINATE:
                 return self._run_terminate()
+            case RepairMachineState.RUN_TERMINATE_ASSESSMENT:
+                return self._run_terminate_assessment()
             case RepairMachineState.RUN_RESET:
                 return self._run_reset()
             case RepairMachineState.RUN_OFFICIAL:
@@ -236,6 +245,9 @@ class RepairStateMachine:
             logs_timeout_seconds=self.runtime.context_logs_timeout_seconds_fn(self.cfg),
         )
         if self.initial_evaluation.effective_healthy:
+            if self.manual_start:
+                self.logger.info("manual repair requested while already healthy; continuing full workflow")
+                return RepairMachineState.CHECK_REPAIR_ENABLED
             self.logger.info("repair skipped: already healthy")
             self.runtime.clear_repair_progress_fn(self.cfg.monitor.state_dir)
             self.terminal_result = RepairResult(
@@ -285,7 +297,11 @@ class RepairStateMachine:
         initial_evaluation = self._initial_evaluation()
         attempt_dir = self.runtime.attempt_dir_fn(self.cfg)
         self.store.mark_repair_attempt()
-        self.ctx = RepairPipelineContext(cfg=self.cfg, store=self.store, attempt_dir=attempt_dir)
+        self.ctx = RepairPipelineContext(
+            cfg=self.cfg,
+            store=self.store,
+            attempt_dir=attempt_dir,
+        )
         self.outcome = RepairOutcome(attempt_dir=str(attempt_dir.resolve()), reason=self.reason)
         self.logger.info("starting repair attempt: dir=%s", attempt_dir.resolve())
         self.runtime.write_repair_progress_fn(
@@ -297,14 +313,19 @@ class RepairStateMachine:
         # Use manual repair message if triggered manually
         start_message = (
             self.messages.repair_starting_manual_message
-            if self.reason == "manual_discord"
+            if self.manual_start
             else self.messages.repair_starting_message
         )
-        self._outcome().start_notification = self.runtime.notify_send_with_level_fn(
+        self._outcome().start_notification = self.runtime.dispatch_notification_fn(
             self.cfg,
-            start_message,
-            self.messages.notify_level_important,
+            kind="repair_started",
+            source="repair",
+            text=start_message,
+            level=self.messages.notify_level_important,
             silent=False,
+            local_title="🔧 修复已启动",
+            local_body="修复正在后台运行，请稍候...",
+            dedupe_key=f"repair_started:{attempt_dir.resolve()}",
         )
         self._outcome().before_context = self.runtime.collect_context_fn(initial_evaluation, attempt_dir, stage_name="before")
         return RepairMachineState.CHECK_SOFT_PAUSE
@@ -332,10 +353,13 @@ class RepairStateMachine:
         if not pause_check_stage.fixed:
             return RepairMachineState.RUN_TERMINATE
         self._outcome().final_stage = pause_check_stage
-        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.dispatch_notification_fn(
             self.cfg,
-            self.messages.recovered_after_pause_message,
-            self.messages.notify_level_important,
+            kind="repair_status",
+            source="repair",
+            text=self.messages.recovered_after_pause_message,
+            level=self.messages.notify_level_important,
+            dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:recovered_after_pause",
         )
         self.logger.info("recovered after soft pause: dir=%s", self._ctx().attempt_dir.resolve())
         self._finish_attempt()
@@ -343,11 +367,42 @@ class RepairStateMachine:
 
     def _run_terminate(self) -> RepairMachineState:
         self.terminate_stage = self._outcome().add_stage(self.stages.session_terminate_stage_cls().run(self._ctx()))
+        if self.reassess_after_terminate:
+            if self.runtime.session_stage_has_successful_commands_fn(self.terminate_stage):
+                return RepairMachineState.RUN_TERMINATE_ASSESSMENT
+            return RepairMachineState.RUN_OFFICIAL
         return RepairMachineState.RUN_RESET
 
+    def _run_terminate_assessment(self) -> RepairMachineState:
+        if self.terminate_stage is None:
+            raise RuntimeError("terminate assessment requires a terminate stage result")
+        terminate_check_stage = self._outcome().add_stage(
+            self.stages.terminate_assessment_stage_cls().run(self._ctx(), previous_stage=self.terminate_stage)
+        )
+        if not terminate_check_stage.fixed:
+            return RepairMachineState.RUN_RESET
+        self._outcome().final_stage = terminate_check_stage
+        self._outcome().final_notification = self.runtime.dispatch_notification_fn(
+            self.cfg,
+            kind="repair_status",
+            source="repair",
+            text=self.messages.recovered_after_stop_message,
+            level=self.messages.notify_level_important,
+            dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:recovered_after_stop",
+        )
+        self.logger.info("recovered after hard stop: dir=%s", self._ctx().attempt_dir.resolve())
+        self._finish_attempt()
+        return RepairMachineState.DONE
+
     def _run_reset(self) -> RepairMachineState:
+        if self.terminate_stage is None:
+            raise RuntimeError("reset requires a terminate stage result")
         self._outcome().add_stage(
-            self.stages.session_reset_stage_cls().run(self._ctx(), previous_stage=self.terminate_stage)
+            self.stages.session_reset_stage_cls().run(
+                self._ctx(),
+                previous_stage=self.terminate_stage,
+                wait_before_reset=not self.reassess_after_terminate,
+            )
         )
         return RepairMachineState.RUN_OFFICIAL
 
@@ -361,10 +416,13 @@ class RepairStateMachine:
         if not self.official_stage.fixed:
             return RepairMachineState.CHECK_AI_ENABLED
         self._outcome().final_stage = self.official_stage
-        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.dispatch_notification_fn(
             self.cfg,
-            self.messages.recovered_by_official_message,
-            self.messages.notify_level_important,
+            kind="repair_status",
+            source="repair",
+            text=self.messages.recovered_by_official_message,
+            level=self.messages.notify_level_important,
+            dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:recovered_by_official",
         )
         self.logger.info("recovered by official steps: dir=%s", self._ctx().attempt_dir.resolve())
         self._finish_attempt()
@@ -379,11 +437,14 @@ class RepairStateMachine:
         self.logger.info("Codex-assisted remediation disabled; leaving OpenClaw unhealthy")
         final_stage = self._outcome().add_stage(self.stages.final_assessment_stage_cls(stage_name="final_no_ai").run(self._ctx()))
         self._outcome().final_stage = final_stage
-        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.dispatch_notification_fn(
             self.cfg,
-            self.messages.ai_disabled_message,
-            self.messages.notify_level_important,
+            kind="repair_status",
+            source="repair",
+            text=self.messages.ai_disabled_message,
+            level=self.messages.notify_level_important,
             silent=False,
+            dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:ai_disabled",
         )
         self._finish_attempt()
         return RepairMachineState.DONE
@@ -408,11 +469,14 @@ class RepairStateMachine:
             self.stages.final_assessment_stage_cls(stage_name="final_rate_limited").run(self._ctx())
         )
         self._outcome().final_stage = final_stage
-        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.dispatch_notification_fn(
             self.cfg,
-            self.messages.ai_rate_limited_message,
-            self.messages.notify_level_all,
+            kind="repair_status",
+            source="repair",
+            text=self.messages.ai_rate_limited_message,
+            level=self.messages.notify_level_all,
             silent=False,
+            dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:ai_rate_limited",
         )
         self._finish_attempt()
         return RepairMachineState.DONE
@@ -437,11 +501,14 @@ class RepairStateMachine:
         if self.ai_decision_stage.notification is not None:
             self._outcome().final_notification = self.ai_decision_stage.notification
         else:
-            self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
+            self._outcome().final_notification = self.runtime.dispatch_notification_fn(
                 self.cfg,
-                self.messages.no_yes_received_message,
-                self.messages.notify_level_important,
+                kind="repair_status",
+                source="repair",
+                text=self.messages.no_yes_received_message,
+                level=self.messages.notify_level_important,
                 silent=False,
+                dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:no_yes_received",
             )
         self._finish_attempt()
         return RepairMachineState.DONE
@@ -464,11 +531,14 @@ class RepairStateMachine:
         self._outcome().final_stage = self._outcome().add_stage(
             self.stages.final_assessment_stage_cls(stage_name="final_backup_error").run(self._ctx())
         )
-        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.dispatch_notification_fn(
             self.cfg,
-            self.messages.repair_backup_failed_fn(backup_artifact.error),
-            self.messages.notify_level_important,
+            kind="repair_status",
+            source="repair",
+            text=self.messages.repair_backup_failed_fn(backup_artifact.error),
+            level=self.messages.notify_level_important,
             silent=False,
+            dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:backup_failed",
         )
         self._finish_attempt()
         return RepairMachineState.DONE
@@ -492,11 +562,14 @@ class RepairStateMachine:
         if self.ai_config_stage is None:
             raise RuntimeError("AI config success exit requires an AI config stage result")
         self._outcome().final_stage = self.ai_config_stage
-        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.dispatch_notification_fn(
             self.cfg,
-            self.messages.ai_config_success_message,
-            self.messages.notify_level_important,
+            kind="repair_status",
+            source="repair",
+            text=self.messages.ai_config_success_message,
+            level=self.messages.notify_level_important,
             silent=False,
+            dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:ai_config_success",
         )
         self.logger.info("recovered by Codex-assisted remediation: dir=%s", self._ctx().attempt_dir.resolve())
         self._finish_attempt()
@@ -522,11 +595,14 @@ class RepairStateMachine:
         if self.ai_code_stage is None:
             raise RuntimeError("AI code success exit requires an AI code stage result")
         self._outcome().final_stage = self.ai_code_stage
-        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.dispatch_notification_fn(
             self.cfg,
-            self.messages.ai_code_success_message,
-            self.messages.notify_level_important,
+            kind="repair_status",
+            source="repair",
+            text=self.messages.ai_code_success_message,
+            level=self.messages.notify_level_important,
             silent=False,
+            dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:ai_code_success",
         )
         self.logger.info("recovered by code-stage remediation: dir=%s", self._ctx().attempt_dir.resolve())
         self._finish_attempt()
@@ -535,11 +611,14 @@ class RepairStateMachine:
     def _run_final_assessment(self) -> RepairMachineState:
         final_stage = self._outcome().add_stage(self.stages.final_assessment_stage_cls(stage_name="final").run(self._ctx()))
         self._outcome().final_stage = final_stage
-        self._outcome().final_notification = self.runtime.notify_send_with_level_fn(
+        self._outcome().final_notification = self.runtime.dispatch_notification_fn(
             self.cfg,
-            self.messages.final_still_unhealthy_message,
-            self.messages.notify_level_critical,
+            kind="repair_status",
+            source="repair",
+            text=self.messages.final_still_unhealthy_message,
+            level=self.messages.notify_level_critical,
             silent=False,
+            dedupe_key=f"repair_status:{self._ctx().attempt_dir.resolve()}:final_unhealthy",
         )
         self.logger.warning(
             "repair attempt finished: fixed=%s used_codex=%s dir=%s",

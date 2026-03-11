@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -106,7 +107,7 @@ def _make_official_steps_result(
         _make_health_evaluation(
             effective_healthy=effective_healthy,
             anomaly_guard=anomaly_guard,
-            reason="anomaly_guard" if anomaly_guard and anomaly_guard.get("triggered") else None,
+            reason=repair_module.repair_ops._anomaly_guard_reason(anomaly_guard),
         ),
         break_reason or ("healthy" if effective_healthy else "steps_exhausted"),
     )
@@ -853,6 +854,335 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
         self.assertEqual(handoff_detector["involved_roles"], ["orchestrator", "builder"])
         self.assertEqual(len(handoff_detector["evidence"]), 2)
 
+    def test_detector_uses_transcript_source_for_assistant_repeats(self) -> None:
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=2,
+                min_cycle_repeated_turns=99,
+                stagnation_enabled=False,
+                auto_dispatch_check=False,
+            )
+        )
+        transcripts = [
+            {
+                "agent_id": "macs-builder",
+                "session_id": "s-1",
+                "session_key": "agent:macs-builder:main",
+                "transcript_path": "/tmp/s-1.jsonl",
+                "entries": [
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Same implementation status update"}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Same implementation status update"}],
+                        },
+                    },
+                ],
+            }
+        ]
+
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, transcripts=transcripts)
+
+        self.assertEqual(info["source"], "transcript")
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["repeat_trigger"])
+        self.assertEqual(info["metrics"]["transcripts_analyzed"], 1)
+        self.assertEqual(info["metrics"]["assistant_messages_analyzed"], 2)
+
+    def test_detector_triggers_on_reset_backfill_in_transcript(self) -> None:
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=99,
+                stagnation_enabled=False,
+                auto_dispatch_check=False,
+            )
+        )
+        reset_text = (
+            "A new session was started via /new or /reset. "
+            "Execute your Session Startup sequence now."
+        )
+        queued_text = """[Queued messages while agent was busy]
+
+---
+Queued #1
+Conversation info (untrusted metadata):
+```json
+{"sender_id": "openclaw-control-ui"}
+```"""
+        transcripts = [
+            {
+                "agent_id": "macs-builder",
+                "session_id": "s-1",
+                "session_key": "agent:macs-builder:main",
+                "transcript_path": "/tmp/s-1.jsonl",
+                "entries": [
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": reset_text}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": queued_text}],
+                        },
+                    },
+                ],
+            }
+        ]
+
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, transcripts=transcripts)
+
+        self.assertEqual(info["source"], "transcript")
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["reset_backfill_trigger"])
+        self.assertEqual(info["metrics"]["reset_markers"], 1)
+        self.assertEqual(info["metrics"]["queued_backfill_messages"], 1)
+
+    def test_detector_triggers_on_self_sender_ingress_in_transcript(self) -> None:
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=99,
+                stagnation_enabled=False,
+                auto_dispatch_check=False,
+            )
+        )
+        user_text = """Conversation info (untrusted metadata):
+```json
+{
+  "sender_id": "1479020497189736580",
+  "sender": "Orchestrator"
+}
+```
+
+Sender (untrusted metadata):
+```json
+{
+  "id": "1479020497189736580",
+  "name": "Orchestrator",
+  "username": "Orchestrator"
+}
+```"""
+        transcripts = [
+            {
+                "agent_id": "macs-orchestrator",
+                "session_id": "s-1",
+                "session_key": "agent:macs-orchestrator:discord:channel:1",
+                "transcript_path": "/tmp/s-1.jsonl",
+                "entries": [
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": user_text}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "NO_REPLY"}],
+                        },
+                    },
+                ],
+            }
+        ]
+
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, transcripts=transcripts)
+
+        self.assertEqual(info["source"], "transcript")
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["self_sender_ingress_trigger"])
+        self.assertEqual(info["metrics"]["self_sender_messages"], 1)
+        self.assertEqual(info["metrics"]["self_sender_session_starts"], 1)
+        self.assertEqual(info["metrics"]["self_sender_ids"], ["1479020497189736580"])
+
+    def test_detector_ignores_non_self_sender_ingress_in_transcript(self) -> None:
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=99,
+                stagnation_enabled=False,
+                auto_dispatch_check=False,
+            )
+        )
+        user_text = """Conversation info (untrusted metadata):
+```json
+{
+  "sender_id": "1439980369234497627",
+  "sender": "Peter"
+}
+```
+
+Sender (untrusted metadata):
+```json
+{
+  "id": "1439980369234497627",
+  "name": "Peter",
+  "username": "peter_72476"
+}
+```"""
+        transcripts = [
+            {
+                "agent_id": "macs-orchestrator",
+                "session_id": "s-1",
+                "session_key": "agent:macs-orchestrator:discord:channel:1",
+                "transcript_path": "/tmp/s-1.jsonl",
+                "entries": [
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": user_text}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "收到"}],
+                        },
+                    },
+                ],
+            }
+        ]
+
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, transcripts=transcripts)
+
+        self.assertFalse(info["triggered"])
+        self.assertFalse(info["signals"]["self_sender_ingress_trigger"])
+        self.assertEqual(info["metrics"]["self_sender_messages"], 0)
+
+    def test_detector_triggers_on_recent_discord_identity_degraded_in_logs(self) -> None:
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=99,
+                stagnation_enabled=False,
+                auto_dispatch_check=False,
+            )
+        )
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        log_result = runtime_module.CmdResult(
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=f"{timestamp} [discord] logged in to discord",
+            stderr="",
+        )
+
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
+
+        self.assertEqual(info["source"], "logs")
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["discord_identity_degraded_trigger"])
+        self.assertEqual(info["metrics"]["discord_identity_degraded_events"], 1)
+        detector = next(detector for detector in info["detectors"] if detector["detector"] == "discord_identity_degraded")
+        self.assertTrue(detector["triggered"])
+        self.assertEqual(detector["kind"], "root_cause")
+
+    def test_detector_ignores_stale_discord_identity_degraded_logs(self) -> None:
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=99,
+                stagnation_enabled=False,
+                auto_dispatch_check=False,
+            )
+        )
+        stale_timestamp = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+        log_result = runtime_module.CmdResult(
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=f"{stale_timestamp} [discord] logged in to discord",
+            stderr="",
+        )
+
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result)
+
+        self.assertFalse(info["triggered"])
+        self.assertFalse(info["signals"]["discord_identity_degraded_trigger"])
+        self.assertEqual(info["metrics"]["discord_identity_degraded_events"], 0)
+
+    def test_detector_combines_transcript_and_log_root_cause_signals(self) -> None:
+        cfg = config_module.AppConfig(
+            anomaly_guard=config_module.AnomalyGuardConfig(
+                enabled=True,
+                max_repeat_same_signature=99,
+                min_cycle_repeated_turns=99,
+                stagnation_enabled=False,
+                auto_dispatch_check=False,
+            )
+        )
+        transcript_text = """Conversation info (untrusted metadata):
+```json
+{
+  "sender_id": "1479020497189736580",
+  "sender": "Orchestrator"
+}
+```"""
+        transcripts = [
+            {
+                "agent_id": "macs-orchestrator",
+                "session_id": "s-1",
+                "session_key": "agent:macs-orchestrator:discord:channel:1",
+                "transcript_path": "/tmp/s-1.jsonl",
+                "entries": [
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": transcript_text}],
+                        },
+                    }
+                ],
+            }
+        ]
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        log_result = runtime_module.CmdResult(
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
+            cwd=None,
+            exit_code=0,
+            duration_ms=1,
+            stdout=f"{timestamp} [discord] logged in to discord",
+            stderr="",
+        )
+
+        info = anomaly_guard_module._analyze_anomaly_guard(cfg, logs=log_result, transcripts=transcripts)
+
+        self.assertEqual(info["source"], "combined")
+        self.assertTrue(info["triggered"])
+        self.assertTrue(info["signals"]["self_sender_ingress_trigger"])
+        self.assertTrue(info["signals"]["discord_identity_degraded_trigger"])
+        triggered_detectors = {
+            detector["detector"]
+            for detector in info["detectors"]
+            if detector["triggered"]
+        }
+        self.assertIn("self_sender_ingress", triggered_detectors)
+        self.assertIn("discord_identity_degraded", triggered_detectors)
+
 
 class TestNotifyDecision(unittest.TestCase):
     def test_extract_ai_decision_respects_operator_filter(self) -> None:
@@ -1252,6 +1582,42 @@ class TestNotifyDecision(unittest.TestCase):
             self.assertEqual(out.get("decision"), "timeout")
             self.assertEqual(after_ids, ["m-ask", "10"])
 
+    def test_ask_user_enable_ai_prefers_latest_valid_reply_in_out_of_order_batch(self) -> None:
+        cfg = config_module.AppConfig(
+            notify=config_module.NotifyConfig(
+                account=TEST_BOT_USERNAME,
+                target=f"channel:{TEST_CHANNEL_ID}",
+                required_mention_id=TEST_BOT_USER_ID,
+                ask_enable_ai=True,
+                ask_timeout_seconds=60,
+                poll_interval_seconds=1,
+                operator_user_ids=["u1"],
+            )
+        )
+        attempt_dir = Path(tempfile.mkdtemp())
+        replies = [
+            {
+                "id": "9",
+                "content": f"<@{TEST_BOT_USER_ID}> no",
+                "author": {"id": "u1", "bot": False},
+                "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+            },
+            {
+                "id": "10",
+                "content": f"<@{TEST_BOT_USER_ID}> yes",
+                "author": {"id": "u1", "bot": False},
+                "mentions": [{"id": TEST_BOT_USER_ID, "username": TEST_BOT_USERNAME}],
+            },
+        ]
+        with patch.object(notify_module, "_notify_send", return_value={"sent": True, "message_id": "m-ask"}), patch.object(
+            notify_module, "_notify_read_messages", side_effect=[replies]
+        ), patch.object(
+            notify_module.time, "monotonic", side_effect=[0, 0]
+        ):
+            out = notify_module._ask_user_enable_ai(cfg, attempt_dir)
+            self.assertEqual(out.get("decision"), "yes")
+            self.assertEqual(out.get("reply_message_id"), "10")
+
     def test_ask_user_enable_ai_stops_when_gui_claims_first(self) -> None:
         state_dir = Path(tempfile.mkdtemp())
         cfg = config_module.AppConfig(
@@ -1475,6 +1841,45 @@ class TestRepairFlow(unittest.TestCase):
             self.assertEqual(write_progress_mock.call_count, 0)
             self._assert_progress_cleared(cfg, clear_progress_mock)
 
+    def test_attempt_repair_manual_request_runs_full_flow_when_already_healthy(self) -> None:
+        cfg = self._isolated_cfg()
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        with patch.object(repair_module, "_collect_context", return_value={"healthy": True}), patch.object(
+            repair_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
+        ), patch.object(
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
+        ), patch.object(
+            repair_module,
+            "_evaluate_health",
+            return_value=_make_health_evaluation(effective_healthy=True),
+        ), patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(
+            repair_module,
+            "write_repair_progress",
+            wraps=shared_module.write_repair_progress,
+        ) as write_progress_mock, patch.object(
+            repair_module,
+            "clear_repair_progress",
+            wraps=shared_module.clear_repair_progress,
+        ) as clear_progress_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason="manual_discord")
+            self.assertTrue(result.attempted)
+            self.assertTrue(result.fixed)
+            self.assertFalse(result.used_ai)
+            self.assertNotIn("already_healthy", result.details)
+            self.assertEqual(self._stage_names(result), ["terminate", "new", "official"])
+            self.assertTrue(any("收到手动修复命令" in msg for msg in self._notify_messages(notify_mock)))
+            self._assert_progress_flow(
+                write_progress_mock,
+                [
+                    ("starting", "running"),
+                    ("official", "running"),
+                    ("official", "completed"),
+                ],
+            )
+            self._assert_progress_cleared(cfg, clear_progress_mock)
+
     def test_attempt_repair_skips_when_repair_disabled(self) -> None:
         cfg = self._isolated_cfg(
             repair=config_module.RepairConfig(enabled=False, official_steps=[], soft_pause_enabled=False),
@@ -1650,6 +2055,57 @@ class TestRepairFlow(unittest.TestCase):
             )
             self._assert_progress_cleared(cfg, clear_progress_mock)
 
+    def test_attempt_repair_stops_and_skips_new_when_queue_contamination_recovers(self) -> None:
+        cfg = self._isolated_cfg(
+            repair=config_module.RepairConfig(
+                enabled=True,
+                official_steps=[],
+                soft_pause_enabled=False,
+                terminate_message="/stop",
+                new_message="/new",
+            ),
+            ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
+        )
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module,
+            "_run_session_command_stage",
+            side_effect=[
+                [{"agent": "macs-orchestrator", "argv": ["openclaw"], "exit_code": 0, "duration_ms": 1, "stdout_path": "a", "stderr_path": "b"}],
+                [],
+            ],
+        ) as stage_mock, patch.object(
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
+        ), patch.object(
+            repair_module,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=True),
+            ],
+        ), patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(
+            repair_module.time, "sleep", return_value=None
+        ):
+            result = repair_module.attempt_repair(cfg, store, force=True, reason="queue_contamination")
+
+        self.assertTrue(result.attempted)
+        self.assertTrue(result.fixed)
+        self.assertEqual(self._stage_names(result), ["terminate", "terminate_check"])
+        self.assertEqual([call.kwargs["stage_name"] for call in stage_mock.call_args_list], ["terminate"])
+        self.assertEqual([call.kwargs["message_text"] for call in stage_mock.call_args_list], ["/stop"])
+        self.assertIsNotNone(result.outcome)
+        outcome = result.outcome
+        if outcome is None:
+            self.fail("expected typed repair outcome")
+        terminate_payload = outcome.stages[0].payload
+        self.assertIsInstance(terminate_payload, repair_module.SessionStageData)
+        if not isinstance(terminate_payload, repair_module.SessionStageData):
+            self.fail("expected SessionStageData payload")
+        self.assertEqual(result.details.get("reason"), "queue_contamination")
+        self.assertTrue(any("已执行 /stop 并完成复检" in msg for msg in self._notify_messages(notify_mock)))
+
     def test_attempt_repair_recovers_after_soft_pause_before_hard_reset(self) -> None:
         cfg = self._isolated_cfg(
             repair=config_module.RepairConfig(
@@ -1717,6 +2173,49 @@ class TestRepairFlow(unittest.TestCase):
                 ],
             )
             self._assert_progress_cleared(cfg, clear_progress_mock)
+
+    def test_attempt_repair_runs_new_after_stop_when_queue_contamination_persists(self) -> None:
+        cfg = self._isolated_cfg(
+            repair=config_module.RepairConfig(
+                enabled=True,
+                official_steps=[],
+                soft_pause_enabled=False,
+                terminate_message="/stop",
+                new_message="/new",
+                session_stage_wait_seconds=2,
+            ),
+            ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
+        )
+        store = state_module.StateStore(cfg.monitor.state_dir)
+        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
+            repair_module,
+            "_run_session_command_stage",
+            side_effect=[
+                [{"agent": "macs-orchestrator", "argv": ["openclaw"], "exit_code": 0, "duration_ms": 1, "stdout_path": "a", "stderr_path": "b"}],
+                [],
+            ],
+        ) as stage_mock, patch.object(
+            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
+        ), patch.object(
+            repair_module,
+            "_evaluate_health",
+            side_effect=[
+                _make_health_evaluation(effective_healthy=False),
+                _make_health_evaluation(effective_healthy=False),
+            ],
+        ), patch.object(
+            repair_module, "_notify_send", return_value={"sent": True}
+        ), patch.object(
+            repair_module.time, "sleep", return_value=None
+        ) as sleep_mock:
+            result = repair_module.attempt_repair(cfg, store, force=True, reason="queue_contamination")
+
+        self.assertTrue(result.attempted)
+        self.assertTrue(result.fixed)
+        self.assertEqual(self._stage_names(result), ["terminate", "terminate_check", "new", "official"])
+        self.assertEqual([call.kwargs["stage_name"] for call in stage_mock.call_args_list], ["terminate", "new"])
+        self.assertEqual([call.kwargs["message_text"] for call in stage_mock.call_args_list], ["/stop", "/new"])
+        sleep_mock.assert_called_once_with(2)
 
     def test_attempt_repair_skips_soft_pause_when_status_probe_failed(self) -> None:
         cfg = self._isolated_cfg(
@@ -2420,6 +2919,122 @@ class TestHealthDetailsAndLogging(unittest.TestCase):
             self.assertEqual(evaluation.health["exit_code"], 1)
             self.assertEqual(evaluation.status["exit_code"], 0)
 
+    def test_evaluate_health_prefers_transcripts_for_anomaly_guard(self) -> None:
+        cfg = config_module.AppConfig()
+        ok_health = _make_probe("health")
+        ok_status = _make_probe("status")
+        logs_probe = _make_cmd_result(
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
+            stdout="builder: fallback logs",
+        )
+        transcripts = [
+            {
+                "agent_id": "macs-builder",
+                "session_id": "s-1",
+                "session_key": "agent:macs-builder:main",
+                "transcript_path": "/tmp/s-1.jsonl",
+                "entries": [],
+            }
+        ]
+        transcript_result = {
+            "triggered": True,
+            "source": "transcript",
+            "signals": {"repeat_trigger": True},
+        }
+
+        with patch.object(repair_module, "probe_health", return_value=ok_health), patch.object(
+            repair_module, "probe_status", return_value=ok_status
+        ), patch.object(
+            repair_module, "probe_logs", return_value=logs_probe
+        ), patch.object(
+            repair_module, "_probe_session_transcripts", return_value=transcripts
+        ), patch.object(
+            repair_module, "_analyze_anomaly_guard", return_value=transcript_result
+        ) as analyze_mock:
+            evaluation = repair_module._evaluate_health(cfg)
+
+        self.assertFalse(evaluation.effective_healthy)
+        self.assertEqual(evaluation.reason, "anomaly_guard")
+        self.assertEqual(evaluation.anomaly_guard, transcript_result)
+        self.assertEqual(evaluation.logs_probe, logs_probe)
+        _, kwargs = analyze_mock.call_args
+        self.assertEqual(kwargs["transcripts"], transcripts)
+        self.assertEqual(kwargs["logs"], logs_probe)
+
+    def test_evaluate_health_maps_discord_identity_degraded_to_queue_contamination(self) -> None:
+        cfg = config_module.AppConfig()
+        ok_health = _make_probe("health")
+        ok_status = _make_probe("status")
+        logs_probe = _make_cmd_result(
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
+            stdout="2026-03-11T00:00:00Z [discord] logged in to discord",
+        )
+        anomaly_result = {
+            "triggered": True,
+            "source": "logs",
+            "signals": {"discord_identity_degraded_trigger": True},
+            "detectors": [
+                {
+                    "detector": "discord_identity_degraded",
+                    "triggered": True,
+                    "kind": "root_cause",
+                    "evidence": [],
+                }
+            ],
+        }
+
+        with patch.object(repair_module, "probe_health", return_value=ok_health), patch.object(
+            repair_module, "probe_status", return_value=ok_status
+        ), patch.object(
+            repair_module, "probe_logs", return_value=logs_probe
+        ), patch.object(
+            repair_module, "_probe_session_transcripts", return_value=[]
+        ), patch.object(
+            repair_module, "_analyze_anomaly_guard", return_value=anomaly_result
+        ):
+            evaluation = repair_module._evaluate_health(cfg)
+
+        self.assertFalse(evaluation.effective_healthy)
+        self.assertEqual(evaluation.reason, "queue_contamination")
+        self.assertEqual(evaluation.anomaly_guard, anomaly_result)
+
+    def test_evaluate_health_maps_self_sender_ingress_to_queue_contamination(self) -> None:
+        cfg = config_module.AppConfig()
+        ok_health = _make_probe("health")
+        ok_status = _make_probe("status")
+        logs_probe = _make_cmd_result(
+            argv=["openclaw", "logs", "--limit", "200", "--plain"],
+            stdout="2026-03-11T00:00:00Z [discord] ok",
+        )
+        anomaly_result = {
+            "triggered": True,
+            "source": "transcript",
+            "signals": {"self_sender_ingress_trigger": True},
+            "detectors": [
+                {
+                    "detector": "self_sender_ingress",
+                    "triggered": True,
+                    "kind": "root_cause",
+                    "evidence": [],
+                }
+            ],
+        }
+
+        with patch.object(repair_module, "probe_health", return_value=ok_health), patch.object(
+            repair_module, "probe_status", return_value=ok_status
+        ), patch.object(
+            repair_module, "probe_logs", return_value=logs_probe
+        ), patch.object(
+            repair_module, "_probe_session_transcripts", return_value=[{"entries": []}]
+        ), patch.object(
+            repair_module, "_analyze_anomaly_guard", return_value=anomaly_result
+        ):
+            evaluation = repair_module._evaluate_health(cfg)
+
+        self.assertFalse(evaluation.effective_healthy)
+        self.assertEqual(evaluation.reason, "queue_contamination")
+        self.assertEqual(evaluation.anomaly_guard, anomaly_result)
+
     def test_setup_logging_creates_private_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cfg = config_module.AppConfig(
@@ -2588,9 +3203,44 @@ class TestCliCommands(unittest.TestCase):
         self.assertIsInstance(attempt_repair_mock.call_args.args[1], state_module.StateStore)
         self.assertEqual(
             attempt_repair_mock.call_args.kwargs,
-            {"force": True, "reason": None},
+            {"force": True, "reason": "manual_cli"},
         )
         lock.release.assert_called_once()
+
+    def test_cmd_auto_repair_uses_automatic_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = config_module.AppConfig(monitor=config_module.MonitorConfig(state_dir=Path(td)))
+            args = argparse.Namespace(config="ignored.toml", force=False, json=False)
+            result = Mock()
+            result.fixed = True
+            lock = Mock()
+            lock.acquire.return_value = True
+
+            with patch.object(cli, "_load_or_init_config", return_value=cfg), patch.object(
+                cli, "setup_logging"
+            ), patch.object(
+                cli, "FileLock", return_value=lock
+            ), patch.object(
+                cli, "attempt_repair", return_value=result
+            ) as attempt_repair_mock:
+                code = cli.cmd_auto_repair(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            attempt_repair_mock.call_args.kwargs,
+            {"force": False, "reason": None},
+        )
+        lock.release.assert_called_once()
+
+    def test_build_parser_rejects_legacy_repair_manual_flag(self) -> None:
+        parser = cli.build_parser()
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", new=stderr), self.assertRaises(SystemExit) as exc_info:
+            parser.parse_args(["repair", "--manual"])
+
+        self.assertNotEqual(exc_info.exception.code, 0)
+        self.assertIn("unrecognized arguments: --manual", stderr.getvalue())
 
     def test_cmd_up_enables_monitoring_before_monitor(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -2680,6 +3330,45 @@ class TestMonitorLoop(unittest.TestCase):
             store,
             force=False,
             reason="anomaly_guard",
+        )
+
+    def test_monitor_loop_passes_queue_contamination_reason(self) -> None:
+        class StopLoop(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg = config_module.AppConfig(
+                monitor=config_module.MonitorConfig(
+                    state_dir=Path(td),
+                    interval_seconds=1,
+                )
+            )
+            store = state_module.StateStore(Path(td))
+            evaluation = _make_health_evaluation(
+                effective_healthy=False,
+                anomaly_guard={"triggered": True, "signals": {"discord_identity_degraded_trigger": True}},
+                reason="queue_contamination",
+            )
+            repair_result = SimpleNamespace(
+                attempted=True,
+                fixed=False,
+                used_ai=False,
+                details={"attempt_dir": str(Path(td) / "attempt-1")},
+            )
+
+            with patch.object(monitor, "run_check", return_value=evaluation), patch.object(
+                monitor, "attempt_repair", return_value=repair_result
+            ) as attempt_repair_mock, patch.object(
+                monitor.time, "sleep", side_effect=StopLoop
+            ):
+                with self.assertRaises(StopLoop):
+                    monitor.monitor_loop(cfg, store)
+
+        attempt_repair_mock.assert_called_once_with(
+            cfg,
+            store,
+            force=False,
+            reason="queue_contamination",
         )
 
     def test_monitor_loop_handles_manual_repair_command_even_when_monitoring_disabled(self) -> None:

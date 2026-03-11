@@ -26,9 +26,7 @@ class MenuBarManager: ObservableObject {
     private let approvalCoordinator = ApprovalCoordinator.shared
     private var cancellables = Set<AnyCancellable>()
     
-    // MARK: - UserDefaults Keys
-    
-    private let hasShownWelcomeKey = "fixMyClawGUI.hasShownWelcome"
+    private let lastNotificationSequenceKeyPrefix = "fixMyClawGUI.lastNotificationSequence"
     private var startupHealthCheckPending = false
     
     // MARK: - 计算属性（转发自 Store）
@@ -75,15 +73,22 @@ class MenuBarManager: ObservableObject {
             await pollRepairProgress()
             await pollApprovalRequest()
             await initialSetup()
+            primeNotificationEventCursorIfNeeded()
             guard await ensureOpenClawCommandConfigured(continueStartupCheckOnSuccess: true) else {
                 return
             }
+            await ensureServiceReadyForGUI()
             await performInitialHealthCheck()
         }
     }
 
     func stop() {
         scheduler.stop()
+    }
+
+    func prepareForTermination() async {
+        scheduler.stop()
+        try? await services.stopService()
     }
     
     /// 启动时的首次健康检查
@@ -100,19 +105,14 @@ class MenuBarManager: ObservableObject {
         }
         
         do {
-            try await refreshHealthSnapshot(notifyOnChange: false)
+            try await refreshHealthSnapshot()
         } catch {
             store.setError("首次健康检查失败: \(error.localizedDescription)", category: .backgroundStatus)
             store.failHealthCheck(error.localizedDescription)
         }
         
         await refreshStatus()
-        await syncPersistedRepairResult(notifyIfNew: false)
-    }
-    
-    private var hasShownWelcome: Bool {
-        get { UserDefaults.standard.bool(forKey: hasShownWelcomeKey) }
-        set { UserDefaults.standard.set(newValue, forKey: hasShownWelcomeKey) }
+        await syncPersistedRepairResult()
     }
     
     private func initialSetup() async {
@@ -125,15 +125,10 @@ class MenuBarManager: ObservableObject {
         await ConfigManager.shared.prepareEditableConfig()
         
         _ = await refreshServiceStatus()
-        await syncPersistedRepairResult(notifyIfNew: false)
+        await syncPersistedRepairResult()
         
         // 派发配置加载事件
         store.send(.configLoaded(exists: ConfigManager.shared.configExists))
-        
-        if !hasShownWelcome, serviceStatus?.installed == false {
-            hasShownWelcome = true
-            presentWelcomeDialog()
-        }
     }
 
     @discardableResult
@@ -240,27 +235,31 @@ class MenuBarManager: ObservableObject {
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard await self.ensureOpenClawCommandConfigured() else { return }
-
-                if self.startupHealthCheckPending && !self.store.hasPerformedInitialCheck {
-                    self.startupHealthCheckPending = false
-                    await self.performInitialHealthCheck()
-                }
+                await self.resumeAfterOpenClawSetup()
             }
         }
+    }
+
+    private func resumeAfterOpenClawSetup() async {
+        guard await ensureOpenClawCommandConfigured() else { return }
+        primeNotificationEventCursorIfNeeded()
+        await ensureServiceReadyForGUI()
+
+        if startupHealthCheckPending && !store.hasPerformedInitialCheck {
+            startupHealthCheckPending = false
+            await performInitialHealthCheck()
+            return
+        }
+
+        await refreshStatus()
     }
     
     // MARK: - 状态刷新
     
-    private func refreshHealthSnapshot(notifyOnChange: Bool) async throws {
-        let previousHealthy = store.lastCheckResult?.healthy
+    private func refreshHealthSnapshot() async throws {
         let result = try await services.checkHealth(configPath: nil)
         let monitoringEnabled = store.statusPayload?.enabled ?? store.state.isMonitoringEnabled
         store.updateHealthCheck(result: result, monitoringEnabled: monitoringEnabled)
-        
-        if notifyOnChange, let previousHealthy, previousHealthy != result.healthy {
-            sendStateChangeNotification(healthy: result.healthy, reason: result.reason)
-        }
     }
     
     private func refreshPostRepairState() async {
@@ -270,11 +269,25 @@ class MenuBarManager: ObservableObject {
         }
         
         do {
-            try await refreshHealthSnapshot(notifyOnChange: false)
+            try await refreshHealthSnapshot()
         } catch {
             print("[GUI] 修复结束后刷新健康状态失败: \(error.localizedDescription)")
         }
         await refreshStatus()
+    }
+
+    private func ensureServiceReadyForGUI(forceRefreshStatus: Bool = false) async {
+        guard ConfigManager.shared.configExists else { return }
+
+        do {
+            let reconcileResult = try await services.reconcileService(configPath: nil)
+            store.updateServiceStatus(reconcileResult.service)
+            if forceRefreshStatus {
+                _ = await refreshServiceStatus()
+            }
+        } catch {
+            store.setError("后台服务启动失败: \(error.localizedDescription)", category: .cliIO)
+        }
     }
     
     func refreshStatus() async {
@@ -284,7 +297,7 @@ class MenuBarManager: ObservableObject {
     
     private func refreshServiceStatus() async -> Bool {
         do {
-            let status = try await services.getServiceStatus()
+            let status = try await services.getServiceStatus(configPath: nil)
             store.updateServiceStatus(status)
             return true
         } catch {
@@ -338,7 +351,7 @@ class MenuBarManager: ObservableObject {
             store.beginHealthCheck()
             
             do {
-                try await refreshHealthSnapshot(notifyOnChange: true)
+                try await refreshHealthSnapshot()
                 await refreshStatus()
             } catch {
                 store.setError(error.localizedDescription, category: .cliIO)
@@ -357,8 +370,6 @@ class MenuBarManager: ObservableObject {
             store.setLoading(true)
             store.updateRepairStage("starting")
             
-            await postLocalNotification(title: "🔧 修复已启动", body: "修复正在后台运行，请稍候...")
-            
             var serviceWasRunning = false
             do {
                 serviceWasRunning = store.serviceStatus?.running == true
@@ -369,36 +380,22 @@ class MenuBarManager: ObservableObject {
                 let result = try await services.repair(force: force, configPath: nil)
                 
                 if serviceWasRunning {
-                    try? await services.startService()
+                    try? await services.startService(configPath: nil)
                 }
                 
                 await refreshPostRepairState()
-                await handleRepairResult(result, source: .manual, notifyIfNew: true)
+                await handleRepairResult(result, source: .manual)
+                await syncNotificationEvents()
             } catch {
                 store.setError("修复失败: \(error.localizedDescription)", category: .cliIO)
                 if serviceWasRunning {
-                    try? await services.startService()
+                    try? await services.startService(configPath: nil)
                 }
                 await refreshStatus()
                 await postLocalNotification(title: "❌ 修复失败", body: error.localizedDescription)
             }
             
             store.clearRepairState()
-        }
-    }
-    
-    func installService() {
-        guard !store.isLoading else { return }
-        Task {
-            guard await ensureOpenClawCommandConfigured() else { return }
-            store.setLoading(true)
-            defer { store.setLoading(false) }
-            do {
-                try await services.installService(configPath: nil)
-                await refreshStatus()
-            } catch {
-                store.setError("安装服务失败: \(error.localizedDescription)", category: .cliIO)
-            }
         }
     }
     
@@ -417,8 +414,9 @@ class MenuBarManager: ObservableObject {
                 guard await ensureOpenClawCommandConfigured() else {
                     return
                 }
+                await ensureServiceReadyForGUI()
                 await refreshStatus()
-                await syncPersistedRepairResult(notifyIfNew: false)
+                await syncPersistedRepairResult()
                 store.setError(nil)
             } catch {
                 store.setError("创建默认配置失败: \(error.localizedDescription)", category: .config)
@@ -426,49 +424,6 @@ class MenuBarManager: ObservableObject {
         }
     }
     
-    func uninstallService() {
-        guard !store.isLoading else { return }
-        Task {
-            store.setLoading(true)
-            defer { store.setLoading(false) }
-            do {
-                try await services.uninstallService()
-                await refreshStatus()
-            } catch {
-                store.setError("卸载服务失败: \(error.localizedDescription)", category: .cliIO)
-            }
-        }
-    }
-    
-    func startService() {
-        guard !store.isLoading else { return }
-        Task {
-            guard await ensureOpenClawCommandConfigured() else { return }
-            store.setLoading(true)
-            defer { store.setLoading(false) }
-            do {
-                try await services.startService()
-                await refreshStatus()
-            } catch {
-                store.setError("启动服务失败: \(error.localizedDescription)", category: .cliIO)
-            }
-        }
-    }
-    
-    func stopService() {
-        guard !store.isLoading else { return }
-        Task {
-            store.setLoading(true)
-            defer { store.setLoading(false) }
-            do {
-                try await services.stopService()
-                await refreshStatus()
-            } catch {
-                store.setError("停止服务失败: \(error.localizedDescription)", category: .cliIO)
-            }
-        }
-    }
-
     func openOpenClawSetup() {
         presentOpenClawSetup()
     }
@@ -497,21 +452,8 @@ class MenuBarManager: ObservableObject {
         }
     }
     
-    func stopServiceThenQuit() {
-        guard !store.isLoading else { return }
-        
-        Task {
-            store.setLoading(true)
-            defer { store.setLoading(false) }
-            
-            do {
-                try await services.stopService()
-            } catch {
-                // 如果停止失败，静默退出
-            }
-            
-            NSApplication.shared.terminate(nil)
-        }
+    func quit() {
+        NSApplication.shared.terminate(nil)
     }
     
     // MARK: - 调度与状态目录观察
@@ -552,19 +494,25 @@ class MenuBarManager: ObservableObject {
             await pollRepairProgress()
             await pollApprovalRequest()
             if store.currentRepairStage == nil {
-                await syncPersistedRepairResult(notifyIfNew: true)
+                await syncPersistedRepairResult()
             }
+            await syncNotificationEvents()
         }
     }
 
     private func runScheduledStatusRefresh() async -> Bool {
+        if ConfigManager.shared.configExists,
+           await ensureOpenClawCommandConfigured(presentWizardIfNeeded: false) {
+            await ensureServiceReadyForGUI(forceRefreshStatus: true)
+        }
         let serviceRefreshSucceeded = await refreshServiceStatus()
         let statusRefreshSucceeded = await syncStatus()
         await pollRepairProgress()
         await pollApprovalRequest()
         if store.currentRepairStage == nil {
-            await syncPersistedRepairResult(notifyIfNew: true)
+            await syncPersistedRepairResult()
         }
+        await syncNotificationEvents()
         return serviceRefreshSucceeded && statusRefreshSucceeded
     }
 
@@ -580,7 +528,7 @@ class MenuBarManager: ObservableObject {
         guard await ensureOpenClawCommandConfigured(presentWizardIfNeeded: false) else { return true }
         
         do {
-            try await refreshHealthSnapshot(notifyOnChange: true)
+            try await refreshHealthSnapshot()
             await refreshStatus()
             return true
         } catch {
@@ -592,26 +540,18 @@ class MenuBarManager: ObservableObject {
     
     // MARK: - 修复结果处理
     
-    private func handleRepairResult(_ result: RepairResult, source: RepairResultSource, notifyIfNew: Bool) async {
+    private func handleRepairResult(_ result: RepairResult, source: RepairResultSource) async {
         let presentation = result.makePresentation(source: source)
         let isNew = presentation.fingerprint != store.lastHandledRepairFingerprint
         
         if isNew || store.lastRepairPresentation == nil {
             store.updateRepairPresentation(presentation, fingerprint: presentation.fingerprint)
         }
-        
-        if notifyIfNew, isNew {
-            await deliverRepairNotification(presentation)
-        }
     }
     
-    private func deliverRepairNotification(_ presentation: RepairPresentation) async {
-        await postLocalNotification(title: presentation.title, body: presentation.body)
-    }
-    
-    private func syncPersistedRepairResult(notifyIfNew: Bool) async {
+    private func syncPersistedRepairResult() async {
         guard let persisted = services.getRepairResult() else { return }
-        await handleRepairResult(persisted.result, source: .background, notifyIfNew: notifyIfNew)
+        await handleRepairResult(persisted.result, source: .background)
     }
     
     // MARK: - 修复进度轮询
@@ -623,9 +563,9 @@ class MenuBarManager: ObservableObject {
                 guard !store.isLoading else { return }
                 store.updateRepairStage(nil)
                 await refreshPostRepairState()
-                await syncPersistedRepairResult(notifyIfNew: true)
+                await syncPersistedRepairResult()
             } else if store.lastRepairPresentation == nil {
-                await syncPersistedRepairResult(notifyIfNew: false)
+                await syncPersistedRepairResult()
             }
             return
         }
@@ -731,27 +671,46 @@ class MenuBarManager: ObservableObject {
         }
     }
 
-    private func presentWelcomeDialog() {
-        windowCoordinator.presentWelcomeDialog { [weak self] choice in
-            guard let self else { return }
-
-            switch choice {
-            case .installService:
-                self.installService()
-            case .manualOnly:
-                self.hasShownWelcome = true
-            case .remindLater:
-                break
-            }
-        }
-    }
-    
     // MARK: - 通知
-    
-    private func sendStateChangeNotification(healthy: Bool, reason: String?) {
-        let title = healthy ? "🟢 OpenClaw 已恢复" : "🔴 OpenClaw 异常"
-        let body = healthy ? "系统状态恢复正常" : (reason ?? "检测到异常状态")
-        Task { await postLocalNotification(title: title, body: body) }
+
+    private func notificationCursorKey() -> String {
+        "\(lastNotificationSequenceKeyPrefix).\(services.currentStateDirectoryURL().path)"
+    }
+
+    private func primeNotificationEventCursorIfNeeded() {
+        let defaults = UserDefaults.standard
+        let key = notificationCursorKey()
+        guard defaults.object(forKey: key) == nil else { return }
+        let maxSequence = services.getNotificationEvents().last?.sequence ?? 0
+        defaults.set(maxSequence, forKey: key)
+    }
+
+    private func syncNotificationEvents() async {
+        let defaults = UserDefaults.standard
+        let key = notificationCursorKey()
+        guard defaults.object(forKey: key) != nil else {
+            primeNotificationEventCursorIfNeeded()
+            return
+        }
+
+        let events = services.getNotificationEvents()
+        guard let latestSequence = events.last?.sequence else { return }
+
+        let lastSeenSequence = defaults.integer(forKey: key)
+        for event in events where event.sequence > lastSeenSequence {
+            await deliverNotificationEvent(event)
+        }
+        defaults.set(latestSequence, forKey: key)
+    }
+
+    private func deliverNotificationEvent(_ event: PersistedNotificationEvent) async {
+        guard let title = event.localTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let body = event.localBody?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty,
+              !body.isEmpty else {
+            return
+        }
+        await postLocalNotification(title: title, body: body)
     }
     
     nonisolated static func canPostLocalNotifications(

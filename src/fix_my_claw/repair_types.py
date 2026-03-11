@@ -62,9 +62,7 @@ class CommandExecutionRecord:
 
 @dataclass(frozen=True)
 class SessionStageData:
-    stage_name: str
     commands: tuple[CommandExecutionRecord, ...]
-    waited_before_seconds: int = 0
 
 
 @dataclass(frozen=True)
@@ -123,7 +121,6 @@ class BackupArtifact:
 
 @dataclass(frozen=True)
 class AiRepairStageData:
-    stage_name: str
     result: CmdResult
 
 
@@ -205,6 +202,11 @@ class RepairOutcome:
             elif stage.name == "terminate":
                 payload = _require_stage_payload(stage, SessionStageData)
                 out["terminate_stage"] = _records_to_json(payload.commands)
+            elif stage.name == "terminate_check":
+                if stage.context is not None:
+                    out["context_after_terminate"] = stage.context
+                if stage.evaluation and stage.evaluation.anomaly_guard is not None:
+                    out["anomaly_guard_after_terminate"] = stage.evaluation.anomaly_guard
             elif stage.name == "new":
                 payload = _require_stage_payload(stage, SessionStageData)
                 out["new_stage"] = _records_to_json(payload.commands)

@@ -8,6 +8,7 @@ from typing import Any
 
 from .config import AppConfig
 from .messages import ask_enable_ai_prompt, ask_invalid_reply
+from .notification_events import _clean_fix_my_claw_message, dispatch_notification_event
 from .runtime import run_cmd
 from .shared import (
     _claim_ai_approval_decision,
@@ -118,7 +119,16 @@ def _max_message_id(current: str | None, candidate: str | None) -> str | None:
     ids = [x for x in (current, candidate) if x]
     if not ids:
         return None
-    return max(ids, key=lambda x: (1, int(x)) if x.isdigit() else (0, x))
+    return max(ids, key=_message_id_order_key)
+
+
+def _message_id_order_key(message_id: str | None) -> tuple[int, int | str]:
+    value = str(message_id or "").strip()
+    if not value:
+        return (-1, "")
+    if value.isdigit():
+        return (1, int(value))
+    return (0, value)
 
 
 def _normalize_ai_reply_token(text: str) -> str:
@@ -273,7 +283,22 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
         no_keywords=cfg.notify.ai_reject_keywords,
     )
     try:
-        sent = _notify_send(cfg, prompt, silent=False)
+        sent = dispatch_notification_event(
+            cfg.monitor.state_dir,
+            kind="ai_approval_prompt",
+            source="ai_approval",
+            level="all",
+            message_text=prompt,
+            send_channel=True,
+            notify_channel_fn=_notify_send,
+            cfg=cfg,
+            silent=False,
+            local_title="🤖 需要 AI 修复确认",
+            local_body=_clean_fix_my_claw_message(prompt) or "需要决定是否启用 AI 修复。",
+            dedupe_key=f"ai_approval_prompt:{attempt_dir.resolve()}",
+        )
+        if sent is None:
+            raise RuntimeError("ai approval prompt dispatch did not return a channel delivery result")
     except Exception as exc:
         _write_attempt_file(
             attempt_dir,
@@ -338,7 +363,12 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
             return shared_decision
         messages = _notify_read_messages(cfg, after_id=last_seen)
         next_last_seen = last_seen
-        for msg in messages:
+        ordered_messages = sorted(
+            messages,
+            key=lambda msg: _message_id_order_key(str(msg.get("id", "")).strip()),
+            reverse=True,
+        )
+        for msg in ordered_messages:
             msg_id = str(msg.get("id", "")).strip()
             if msg_id:
                 next_last_seen = _max_message_id(next_last_seen, msg_id)
@@ -389,14 +419,21 @@ def _ask_user_enable_ai(cfg: AppConfig, attempt_dir: Path) -> dict[str, Any]:
                     return out
                 remaining = max_invalid_replies - invalid_replies
                 try:
-                    _notify_send(
-                        cfg,
-                        ask_invalid_reply(
+                    dispatch_notification_event(
+                        cfg.monitor.state_dir,
+                        kind="ai_approval_status",
+                        source="ai_approval",
+                        level="all",
+                        message_text=ask_invalid_reply(
                             remaining,
                             yes_keywords=cfg.notify.ai_approve_keywords,
                             no_keywords=cfg.notify.ai_reject_keywords,
                         ),
+                        send_channel=True,
+                        notify_channel_fn=_notify_send,
+                        cfg=cfg,
                         silent=False,
+                        dedupe_key=f"ai_approval_status:{attempt_dir.resolve()}:invalid_reply:{remaining}",
                     )
                 except Exception as notify_exc:
                     _write_attempt_file(

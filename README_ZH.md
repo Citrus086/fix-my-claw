@@ -12,7 +12,7 @@
 ## ✨ 效果与亮点
 
 - 🩹 **自动自愈**：检测到异常后自动执行修复步骤。
-- 🧱 **分层修复**：会话仍可达时先尝试软暂停 `PAUSE` 保留现场；只有仍异常时才升级到 `/stop`、`/new` 和官方结构修复。
+- 🧱 **分层修复**：会话仍可达时先尝试软暂停 `PAUSE` 保留现场；只有仍异常时才升级到 `/stop`，必要时再 `/new`，最后才做官方结构修复。
 - 🔁 **异常守卫**：可从近期日志识别"探针健康但 Agent 在重复/ping-pong"的异常。
 - 🔔 **人工确认开关**：支持通过 Discord 通知并回复 `yes/no` 决定是否启用 Codex 修复。
 - 🧾 **好排障**：每次异常会在 `~/.fix-my-claw/attempts/` 下保存带时间戳的现场产物。
@@ -72,7 +72,8 @@ fix-my-claw stop    # 关闭监控；monitor 会进入 idle
 fix-my-claw status  # 查看监控是否开启以及持久化状态
 fix-my-claw up      # 自动生成默认配置（如不存在）+ 启动常驻监控
 fix-my-claw check   # 单次探测
-fix-my-claw repair  # 单次修复尝试
+fix-my-claw repair       # 手动修复：完整跑一遍修复流程
+fix-my-claw auto-repair  # 自动修复：如果已经健康就跳过
 fix-my-claw monitor # 常驻循环（要求配置已存在）
 fix-my-claw init    # 生成默认配置
 ```
@@ -87,8 +88,8 @@ flowchart TD
   C -->|不健康| E["会话可达时先发送 PAUSE"]
   E --> F{"复检后恢复了吗？"}
   F -->|是| D
-  F -->|否| G["命令级终止(/stop)"]
-  G --> H["重建上下文(/new)"]
+  F -->|否| G["强制停止(/stop)"]
+  G --> H["按需重建上下文(/new)"]
   H --> I["官方修复步骤"]
   I --> J{"恢复了吗？"}
   J -->|是| D
@@ -124,7 +125,7 @@ flowchart TD
 `deploy/systemd/` 提供两种方式：
 
 - **方式 A（推荐）**：`fix-my-claw.service` 常驻监控
-- **方式 B**：`fix-my-claw-oneshot.service` + `fix-my-claw.timer` 定时执行 `fix-my-claw repair`
+- **方式 B**：`fix-my-claw-oneshot.service` + `fix-my-claw.timer` 定时执行 `fix-my-claw auto-repair`
 
 示例（方式 A）：
 
@@ -168,10 +169,12 @@ pip install -e .
 行为：
 
 - 安装时会立即开启监控并启动 launchd job。
+- launchd job 永远指向稳定路径 `~/.fix-my-claw/bin/fix-my-claw-service`。
 - `fix-my-claw start` 表示打开监控。
 - `fix-my-claw stop` 表示关闭监控。launchd job 仍会保留并进入 idle；如需彻底卸载，请手动 `bootout` 或执行卸载脚本。
+- `fix-my-claw service reconcile --config ~/.fix-my-claw/config.toml` 会在检测到漂移时重写稳定 service 二进制与 plist，并按需重启。
 
-如果后面虚拟环境路径变了，先按需重新执行 `pip install -e .`，再重新执行 `deploy/launchd/install.sh`。
+如果后面虚拟环境路径变了，先按需重新执行 `pip install -e .`，再执行 `fix-my-claw service reconcile --config ~/.fix-my-claw/config.toml`（或重新执行 `deploy/launchd/install.sh --force`）。
 
 ## 🖥️ macOS 图形界面应用
 
@@ -235,7 +238,7 @@ git pull
 pip install .
 ```
 
-无论哪种方式，只要 `fix-my-claw` 的实际二进制路径变了，都需要重新执行对应的 `deploy/systemd/install.sh` 或 `deploy/launchd/install.sh`。
+如果 `fix-my-claw` 的实际二进制路径变了，systemd 仍然需要重新执行对应的 `deploy/systemd/install.sh`；launchd 则可以执行 `fix-my-claw service reconcile --config ~/.fix-my-claw/config.toml`，或直接启动一次 GUI 让它自动对齐。
 
 一键卸载：
 

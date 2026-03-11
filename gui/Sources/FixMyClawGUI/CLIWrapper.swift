@@ -96,8 +96,12 @@ actor CLIWrapper {
 
     // MARK: - 服务管理
 
-    func getServiceStatus() async throws -> ServiceStatus {
-        let output = try await run(args: ["service", "status", "--json"], allowNonZeroExit: true)
+    func getServiceStatus(configPath: String? = nil) async throws -> ServiceStatus {
+        var args = ["service", "status", "--json"]
+        if let path = configPath {
+            args += ["--config", path]
+        }
+        let output = try await run(args: args, allowNonZeroExit: true)
         return try decode(ServiceStatus.self, from: output.stdout)
     }
 
@@ -109,12 +113,21 @@ actor CLIWrapper {
         _ = try await run(args: args, timeout: 60)
     }
 
-    func uninstallService() async throws {
-        _ = try await run(args: ["service", "uninstall"], timeout: 30)
+    func startService(configPath: String? = nil) async throws {
+        var args = ["service", "start"]
+        if let path = configPath {
+            args += ["--config", path]
+        }
+        _ = try await run(args: args, timeout: 30)
     }
 
-    func startService() async throws {
-        _ = try await run(args: ["service", "start"], timeout: 30)
+    func reconcileService(configPath: String? = nil) async throws -> ServiceReconcileResult {
+        var args = ["service", "reconcile", "--json"]
+        if let path = configPath {
+            args += ["--config", path]
+        }
+        let output = try await run(args: args, timeout: 60)
+        return try decode(ServiceReconcileResult.self, from: output.stdout)
     }
 
     func stopService() async throws {

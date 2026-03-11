@@ -1,0 +1,18 @@
+{
+  "api_version": "1.0",
+  "action": "noop",
+  "reasons": [],
+  "service": {
+    "api_version": "1.0",
+    "installed": true,
+    "running": true,
+    "label": "com.fix-my-claw.monitor",
+    "plist_path": "~/Library/LaunchAgents/com.fix-my-claw.monitor.plist",
+    "domain": "gui/501",
+    "program_path": "~/.fix-my-claw/bin/fix-my-claw-service",
+    "config_path": "~/.fix-my-claw/config.toml",
+    "expected_program_path": "~/.fix-my-claw/bin/fix-my-claw-service",
+    "expected_config_path": "~/.fix-my-claw/config.toml",
+    "drifted": false
+  }
+}

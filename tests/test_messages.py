@@ -5,8 +5,6 @@ These tests ensure that all notification messages are properly centralized
 and maintain the expected format.
 """
 
-import pytest
-
 from fix_my_claw.messages import (
     REPAIR_AI_CODE_SUCCESS,
     REPAIR_AI_CONFIG_SUCCESS,

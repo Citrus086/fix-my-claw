@@ -54,6 +54,11 @@ def build_service_status_payload(
     label: str,
     plist_path: str,
     domain: str,
+    program_path: str | None = None,
+    config_path: str | None = None,
+    expected_program_path: str | None = None,
+    expected_config_path: str | None = None,
+    drifted: bool = False,
 ) -> dict[str, Any]:
     return with_api_version({
         "installed": installed,
@@ -61,4 +66,22 @@ def build_service_status_payload(
         "label": label,
         "plist_path": plist_path,
         "domain": domain,
+        "program_path": program_path,
+        "config_path": config_path,
+        "expected_program_path": expected_program_path,
+        "expected_config_path": expected_config_path,
+        "drifted": drifted,
+    })
+
+
+def build_service_reconcile_payload(
+    *,
+    action: str,
+    reasons: list[str],
+    service: dict[str, Any],
+) -> dict[str, Any]:
+    return with_api_version({
+        "action": action,
+        "reasons": reasons,
+        "service": service,
     })
