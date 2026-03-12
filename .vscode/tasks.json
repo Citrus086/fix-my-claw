@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Publish fix-my-claw",
+      "type": "shell",
+      "command": "git subtree push --prefix=fix-my-claw fixmyclaw main",
+      "options": {
+        "cwd": "${workspaceFolder}/.."
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    }
+  ]
+}
