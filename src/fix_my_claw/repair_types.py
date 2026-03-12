@@ -1,4 +1,4 @@
-"""Repair module type definitions and legacy details conversion helpers.
+"""Repair pipeline type definitions and legacy details conversion helpers.
 
 This module contains:
 - Result models: RepairResult, RepairOutcome
@@ -7,8 +7,8 @@ This module contains:
 - Context types: RepairPipelineContext
 - Legacy details conversion helpers
 
-These types were extracted from repair.py to improve code organization
-while maintaining full backward compatibility through re-exports.
+These types are shared across the repair state machine, runtime hooks,
+and individual stage implementations.
 """
 
 from __future__ import annotations
@@ -148,6 +148,7 @@ class RepairPipelineContext:
     cfg: AppConfig
     store: StateStore
     attempt_dir: Path
+    runtime: Any | None = None
 
 
 @dataclass

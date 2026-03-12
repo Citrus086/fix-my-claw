@@ -2,7 +2,7 @@
 
 This module owns the control-flow transitions for the repair pipeline.
 It does not implement stage behavior itself; instead, it receives
-patch-sensitive helpers and stage classes from `repair.py`.
+patch-sensitive helpers and stage classes from caller-provided hooks.
 """
 
 from __future__ import annotations
@@ -67,15 +67,22 @@ class RepairMachineState(str, Enum):
 
 @dataclass(frozen=True)
 class RepairRuntimeHooks:
+    ai_decision_notification_text_fn: Callable[[AiDecision], str | None]
+    ask_user_enable_ai_fn: Callable[[AppConfig, Path], dict[str, Any]]
     attempt_dir_fn: Callable[[AppConfig], Path]
+    backup_openclaw_state_fn: Callable[[AppConfig, Path], dict[str, Any]]
     clear_repair_progress_fn: Callable[[Path], None]
     collect_context_fn: Callable[..., dict[str, Any]]
     context_logs_timeout_seconds_fn: Callable[[AppConfig], int]
     evaluate_health_fn: Callable[..., HealthEvaluation]
+    evaluate_with_context_fn: Callable[..., tuple[HealthEvaluation, dict[str, Any]]]
     dispatch_notification_fn: Callable[..., dict[str, Any] | None]
     now_ts_fn: Callable[[], int]
     require_stage_payload_fn: Callable[[StageResult, type[Any]], Any]
     result_from_outcome_fn: Callable[..., RepairResult]
+    run_ai_repair_fn: Callable[..., Any]
+    run_official_steps_fn: Callable[..., tuple[list[dict[str, Any]], HealthEvaluation, str]]
+    run_session_command_stage_fn: Callable[..., list[dict[str, Any]]]
     session_stage_has_successful_commands_fn: Callable[[StageResult], bool]
     should_try_soft_pause_fn: Callable[[AppConfig, HealthEvaluation], bool]
     write_repair_progress_fn: Callable[..., None]
@@ -301,6 +308,7 @@ class RepairStateMachine:
             cfg=self.cfg,
             store=self.store,
             attempt_dir=attempt_dir,
+            runtime=self.runtime,
         )
         self.outcome = RepairOutcome(attempt_dir=str(attempt_dir.resolve()), reason=self.reason)
         self.logger.info("starting repair attempt: dir=%s", attempt_dir.resolve())

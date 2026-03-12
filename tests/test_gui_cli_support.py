@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fix_my_claw import cli
+from fix_my_claw.cli_commands import service as service_module
 from fix_my_claw import config as config_module
 from fix_my_claw import health as health_module
 from fix_my_claw import protocol as protocol_module
@@ -186,7 +187,7 @@ class TestGuiCliCommands(unittest.TestCase):
             path_bin.write_text("", encoding="utf-8")
 
             with patch("sys.argv", [str(bundle_bin)]), patch.object(shutil, "which", return_value=str(path_bin)):
-                resolved = cli._get_fix_my_claw_path()
+                resolved = service_module._get_fix_my_claw_path()
 
             self.assertEqual(resolved, str(bundle_bin.resolve()))
 
@@ -198,8 +199,8 @@ class TestGuiCliCommands(unittest.TestCase):
             config_path = Path(tmpdir) / "config.toml"
             stable_path = Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"
 
-            with patch.object(cli, "_get_launchd_service_binary_path", return_value=stable_path):
-                payload = plistlib.loads(cli._generate_launchd_plist(cfg, str(config_path)))
+            with patch.object(service_module, "_get_launchd_service_binary_path", return_value=stable_path):
+                payload = plistlib.loads(service_module._generate_launchd_plist(cfg, str(config_path)))
 
             self.assertEqual(payload["ProgramArguments"][0], str(stable_path))
             self.assertEqual(payload["ProgramArguments"][3], str(config_path.resolve()))
@@ -652,7 +653,7 @@ class TestGuiCliCommands(unittest.TestCase):
             stdout = io.StringIO()
             stable_path = Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"
             print_output = f"""
-gui/501/{cli._get_launchd_label()} = {{
+gui/501/{service_module._get_launchd_label()} = {{
     state = running
 
     program = {stable_path}
@@ -665,14 +666,14 @@ gui/501/{cli._get_launchd_label()} = {{
 }}
 """
 
-            with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
-                cli, "_get_launchd_plist_path", return_value=plist_path
+            with patch.object(service_module, "_service_platform_supported", return_value=True), patch.object(
+                service_module, "_get_launchd_plist_path", return_value=plist_path
             ), patch.object(
-                cli,
+                service_module,
                 "_launchctl_run",
                 return_value=subprocess.CompletedProcess(["launchctl"], 0, print_output, ""),
             ), patch.object(
-                cli,
+                service_module,
                 "_get_launchd_service_binary_path",
                 return_value=stable_path,
             ), patch("sys.stdout", new=stdout):
@@ -683,9 +684,9 @@ gui/501/{cli._get_launchd_label()} = {{
             self.assertEqual(payload["api_version"], protocol_module.API_VERSION)
             self.assertTrue(payload["installed"])
             self.assertTrue(payload["running"])
-            self.assertEqual(payload["label"], cli._get_launchd_label())
+            self.assertEqual(payload["label"], service_module._get_launchd_label())
             self.assertEqual(payload["plist_path"], str(plist_path))
-            self.assertEqual(payload["domain"], cli._get_launchd_domain())
+            self.assertEqual(payload["domain"], service_module._get_launchd_domain())
             self.assertEqual(payload["program_path"], str(stable_path))
             self.assertEqual(payload["config_path"], str((Path(tmpdir) / "config.toml").resolve()))
             self.assertEqual(payload["expected_program_path"], str(stable_path))
@@ -702,9 +703,9 @@ gui/501/{cli._get_launchd_label()} = {{
             initial_status = protocol_module.build_service_status_payload(
                 installed=True,
                 running=True,
-                label=cli._get_launchd_label(),
+                label=service_module._get_launchd_label(),
                 plist_path=str(Path(tmpdir) / "com.fix-my-claw.monitor.plist"),
-                domain=cli._get_launchd_domain(),
+                domain=service_module._get_launchd_domain(),
                 program_path="/tmp/old/fix-my-claw",
                 config_path=str((Path(tmpdir) / "config.toml").resolve()),
                 expected_program_path=str(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"),
@@ -714,9 +715,9 @@ gui/501/{cli._get_launchd_label()} = {{
             final_status = protocol_module.build_service_status_payload(
                 installed=True,
                 running=True,
-                label=cli._get_launchd_label(),
+                label=service_module._get_launchd_label(),
                 plist_path=str(Path(tmpdir) / "com.fix-my-claw.monitor.plist"),
-                domain=cli._get_launchd_domain(),
+                domain=service_module._get_launchd_domain(),
                 program_path=str(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"),
                 config_path=str((Path(tmpdir) / "config.toml").resolve()),
                 expected_program_path=str(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service"),
@@ -724,14 +725,14 @@ gui/501/{cli._get_launchd_label()} = {{
                 drifted=False,
             )
 
-            with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
+            with patch.object(service_module, "_service_platform_supported", return_value=True), patch.object(
                 cli, "_load_or_init_config", return_value=cfg
             ), patch.object(
-                cli, "_copy_fix_my_claw_to_stable_service_path", return_value=(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service", False)
+                service_module, "_copy_fix_my_claw_to_stable_service_path", return_value=(Path(tmpdir) / ".fix-my-claw" / "bin" / "fix-my-claw-service", False)
             ), patch.object(
-                cli, "_collect_launchd_service_status", side_effect=[initial_status, final_status]
+                service_module, "_collect_launchd_service_status", side_effect=[initial_status, final_status]
             ), patch.object(
-                cli, "_restart_launchd_service"
+                service_module, "_restart_launchd_service"
             ) as restart_mock, patch("sys.stdout", new=stdout):
                 code = cli.cmd_service_reconcile(args)
 
@@ -750,14 +751,14 @@ gui/501/{cli._get_launchd_label()} = {{
             "Bad request.\nCould not find service \"com.fix-my-claw.monitor\" in domain for user gui: 501",
         )
 
-        with patch.object(cli, "_launchctl_run", return_value=result):
-            self.assertFalse(cli._launchd_service_loaded())
+        with patch.object(service_module, "_launchctl_run", return_value=result):
+            self.assertFalse(service_module._launchd_service_loaded())
 
     def test_ensure_launchd_service_unloaded_skips_bootout_when_job_not_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             plist_path = Path(tmpdir) / "com.fix-my-claw.monitor.plist"
             launchctl_calls: list[tuple[tuple[str, ...], bool]] = []
-            job_target = cli._get_launchd_job_target()
+            job_target = service_module._get_launchd_job_target()
 
             def _launchctl_side_effect(*call_args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
                 launchctl_calls.append((call_args, check))
@@ -766,12 +767,12 @@ gui/501/{cli._get_launchd_label()} = {{
                         ["launchctl", *call_args],
                         1,
                         "",
-                        f"Bad request.\nCould not find service \"{cli._get_launchd_label()}\" in domain for user {cli._get_launchd_domain()}",
+                        f"Bad request.\nCould not find service \"{service_module._get_launchd_label()}\" in domain for user {service_module._get_launchd_domain()}",
                     )
                 return subprocess.CompletedProcess(["launchctl", *call_args], 0, "", "")
 
-            with patch.object(cli, "_launchctl_run", side_effect=_launchctl_side_effect):
-                cli._ensure_launchd_service_unloaded(plist_path)
+            with patch.object(service_module, "_launchctl_run", side_effect=_launchctl_side_effect):
+                service_module._ensure_launchd_service_unloaded(plist_path)
 
             self.assertEqual(launchctl_calls, [(("print", job_target), False)])
 
@@ -779,8 +780,8 @@ gui/501/{cli._get_launchd_label()} = {{
         with tempfile.TemporaryDirectory() as tmpdir:
             plist_path = Path(tmpdir) / "com.fix-my-claw.monitor.plist"
             launchctl_calls: list[tuple[tuple[str, ...], bool]] = []
-            domain = cli._get_launchd_domain()
-            job_target = cli._get_launchd_job_target()
+            domain = service_module._get_launchd_domain()
+            job_target = service_module._get_launchd_job_target()
 
             def _launchctl_side_effect(*call_args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
                 launchctl_calls.append((call_args, check))
@@ -802,8 +803,8 @@ gui/501/{cli._get_launchd_label()} = {{
                     )
                 return subprocess.CompletedProcess(["launchctl", *call_args], 0, "", "")
 
-            with patch.object(cli, "_launchctl_run", side_effect=_launchctl_side_effect):
-                cli._ensure_launchd_service_unloaded(plist_path)
+            with patch.object(service_module, "_launchctl_run", side_effect=_launchctl_side_effect):
+                service_module._ensure_launchd_service_unloaded(plist_path)
 
             self.assertEqual(
                 launchctl_calls,
@@ -828,14 +829,14 @@ gui/501/{cli._get_launchd_label()} = {{
                 launchctl_calls.append((call_args, check))
                 return subprocess.CompletedProcess(["launchctl", *call_args], 0, "", "")
 
-            with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
-                cli, "_get_launchd_plist_path", return_value=plist_path
+            with patch.object(service_module, "_service_platform_supported", return_value=True), patch.object(
+                service_module, "_get_launchd_plist_path", return_value=plist_path
             ), patch.object(
                 cli, "_load_or_init_config", return_value=cfg
             ), patch.object(
-                cli, "_generate_launchd_plist", return_value=b"<plist>updated</plist>"
-            ), patch.object(cli, "_ensure_launchd_service_unloaded") as unload_mock, patch.object(
-                cli, "_launchctl_run", side_effect=_launchctl_side_effect
+                service_module, "_generate_launchd_plist", return_value=b"<plist>updated</plist>"
+            ), patch.object(service_module, "_ensure_launchd_service_unloaded") as unload_mock, patch.object(
+                service_module, "_launchctl_run", side_effect=_launchctl_side_effect
             ), patch("sys.stdout", new=io.StringIO()):
                 code = cli.cmd_service_start(args)
 
@@ -845,9 +846,9 @@ gui/501/{cli._get_launchd_label()} = {{
             self.assertEqual(
                 launchctl_calls,
                 [
-                    (("bootstrap", cli._get_launchd_domain(), str(plist_path)), True),
-                    (("enable", cli._get_launchd_job_target()), True),
-                    (("kickstart", "-k", cli._get_launchd_job_target()), True),
+                    (("bootstrap", service_module._get_launchd_domain(), str(plist_path)), True),
+                    (("enable", service_module._get_launchd_job_target()), True),
+                    (("kickstart", "-k", service_module._get_launchd_job_target()), True),
                 ],
             )
 
@@ -857,9 +858,9 @@ gui/501/{cli._get_launchd_label()} = {{
             plist_path.write_text("plist", encoding="utf-8")
             args = SimpleNamespace()
 
-            with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
-                cli, "_get_launchd_plist_path", return_value=plist_path
-            ), patch.object(cli, "_ensure_launchd_service_unloaded") as unload_mock, patch(
+            with patch.object(service_module, "_service_platform_supported", return_value=True), patch.object(
+                service_module, "_get_launchd_plist_path", return_value=plist_path
+            ), patch.object(service_module, "_ensure_launchd_service_unloaded") as unload_mock, patch(
                 "sys.stdout", new=io.StringIO()
             ):
                 code = cli.cmd_service_stop(args)
@@ -873,9 +874,9 @@ gui/501/{cli._get_launchd_label()} = {{
             plist_path.write_text("plist", encoding="utf-8")
             args = SimpleNamespace()
 
-            with patch.object(cli, "_service_platform_supported", return_value=True), patch.object(
-                cli, "_get_launchd_plist_path", return_value=plist_path
-            ), patch.object(cli, "_ensure_launchd_service_unloaded") as unload_mock, patch(
+            with patch.object(service_module, "_service_platform_supported", return_value=True), patch.object(
+                service_module, "_get_launchd_plist_path", return_value=plist_path
+            ), patch.object(service_module, "_ensure_launchd_service_unloaded") as unload_mock, patch(
                 "sys.stdout", new=io.StringIO()
             ):
                 code = cli.cmd_service_uninstall(args)

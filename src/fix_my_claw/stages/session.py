@@ -18,6 +18,7 @@ from ..repair_types import (
     _coerce_execution_records,
     _require_stage_payload,
 )
+from .base import require_runtime_hooks, write_stage_progress
 
 if TYPE_CHECKING:
     from ..repair_types import RepairPipelineContext
@@ -40,27 +41,28 @@ class SessionPauseStage:
         Returns:
             StageResult with SessionStageData containing command records.
         """
-        from ..repair import _run_session_command_stage, write_repair_progress
-
-        write_repair_progress(
+        runtime = require_runtime_hooks(ctx)
+        write_stage_progress(
             ctx.cfg.monitor.state_dir,
-            stage="pause",
-            status="running",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
+            "pause",
+            "running",
+            str(ctx.attempt_dir.resolve()),
+            runtime.write_repair_progress_fn,
         )
         commands = _coerce_execution_records(
-            _run_session_command_stage(
+            runtime.run_session_command_stage_fn(
                 ctx.cfg,
                 ctx.attempt_dir,
                 stage_name="pause",
                 message_text=ctx.cfg.repair.pause_message,
             )
         )
-        write_repair_progress(
+        write_stage_progress(
             ctx.cfg.monitor.state_dir,
-            stage="pause",
-            status="completed",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
+            "pause",
+            "completed",
+            str(ctx.attempt_dir.resolve()),
+            runtime.write_repair_progress_fn,
         )
         return StageResult(
             name="pause",
@@ -85,10 +87,9 @@ class SessionTerminateStage:
         Returns:
             StageResult with SessionStageData containing command records.
         """
-        from ..repair import _run_session_command_stage
-
+        runtime = require_runtime_hooks(ctx)
         commands = _coerce_execution_records(
-            _run_session_command_stage(
+            runtime.run_session_command_stage_fn(
                 ctx.cfg,
                 ctx.attempt_dir,
                 stage_name="terminate",
@@ -125,12 +126,11 @@ class SessionTerminateAssessmentStage:
         Returns:
             StageResult with health evaluation and captured context.
         """
-        from ..repair import _evaluate_with_context
-
         payload = _require_stage_payload(previous_stage, SessionStageData)
+        runtime = require_runtime_hooks(ctx)
         if payload.commands and ctx.cfg.repair.session_stage_wait_seconds > 0:
             time.sleep(ctx.cfg.repair.session_stage_wait_seconds)
-        evaluation, context = _evaluate_with_context(
+        evaluation, context = runtime.evaluate_with_context_fn(
             ctx.cfg,
             ctx.attempt_dir,
             stage_name="after_terminate",
@@ -168,14 +168,13 @@ class SessionResetStage:
         Returns:
             StageResult with SessionStageData containing command records.
         """
-        from ..repair import _run_session_command_stage
-
+        runtime = require_runtime_hooks(ctx)
         if wait_before_reset:
             payload = _require_stage_payload(previous_stage, SessionStageData)
             if payload.commands and ctx.cfg.repair.session_stage_wait_seconds > 0:
                 time.sleep(ctx.cfg.repair.session_stage_wait_seconds)
         commands = _coerce_execution_records(
-            _run_session_command_stage(
+            runtime.run_session_command_stage_fn(
                 ctx.cfg,
                 ctx.attempt_dir,
                 stage_name="new",

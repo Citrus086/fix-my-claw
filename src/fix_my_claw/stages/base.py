@@ -5,7 +5,7 @@ Stages are NOT required to inherit from a heavy base class.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from ..repair_types import RepairPipelineContext, StageResult
@@ -66,3 +66,11 @@ def write_stage_progress(
         status=status,
         attempt_dir=attempt_dir,
     )
+
+
+def require_runtime_hooks(ctx: Any) -> Any:
+    """Return runtime hooks stored in the pipeline context."""
+    runtime = getattr(ctx, "runtime", None)
+    if runtime is None:
+        raise RuntimeError("repair runtime hooks are not available")
+    return runtime

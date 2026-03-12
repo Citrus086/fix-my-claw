@@ -15,6 +15,7 @@ from ..repair_types import (
     StageResult,
     _require_stage_payload,
 )
+from .base import require_runtime_hooks
 
 if TYPE_CHECKING:
     from ..repair_types import RepairPipelineContext
@@ -43,14 +44,13 @@ class PauseAssessmentStage:
         Returns:
             StageResult with PauseCheckStageData and health evaluation.
         """
-        from ..repair import _evaluate_with_context
-
         waited_before_seconds = 0
+        runtime = require_runtime_hooks(ctx)
         payload = _require_stage_payload(previous_stage, SessionStageData)
         if payload.commands and ctx.cfg.repair.pause_wait_seconds > 0:
             time.sleep(ctx.cfg.repair.pause_wait_seconds)
             waited_before_seconds = ctx.cfg.repair.pause_wait_seconds
-        evaluation, context = _evaluate_with_context(
+        evaluation, context = runtime.evaluate_with_context_fn(
             ctx.cfg,
             ctx.attempt_dir,
             stage_name="after_pause",

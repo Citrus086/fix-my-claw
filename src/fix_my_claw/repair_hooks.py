@@ -34,7 +34,7 @@ from .repair_state_machine import (
     RepairStateMachineHooks,
 )
 
-# Re-export notify levels for backward compatibility
+# Notification level constants shared by repair hooks.
 NOTIFY_LEVEL_ALL = repair_ops.NOTIFY_LEVEL_ALL
 NOTIFY_LEVEL_IMPORTANT = repair_ops.NOTIFY_LEVEL_IMPORTANT
 NOTIFY_LEVEL_CRITICAL = repair_ops.NOTIFY_LEVEL_CRITICAL
@@ -55,15 +55,22 @@ def _should_notify(cfg: "AppConfig", level: str) -> bool:
 def build_repair_state_machine_hooks(
     *,
     # Runtime hooks
+    ai_decision_notification_text_fn,
+    ask_user_enable_ai_fn,
     attempt_dir_fn,
+    backup_openclaw_state_fn,
     clear_repair_progress_fn,
     collect_context_fn,
     context_logs_timeout_seconds_fn,
     evaluate_health_fn,
+    evaluate_with_context_fn,
     dispatch_notification_fn,
     now_ts_fn,
     require_stage_payload_fn,
     result_from_outcome_fn,
+    run_ai_repair_fn,
+    run_official_steps_fn,
+    run_session_command_stage_fn,
     session_stage_has_successful_commands_fn,
     should_try_soft_pause_fn,
     write_repair_progress_fn,
@@ -87,15 +94,22 @@ def build_repair_state_machine_hooks(
     """
     return RepairStateMachineHooks(
         runtime=RepairRuntimeHooks(
+            ai_decision_notification_text_fn=ai_decision_notification_text_fn,
+            ask_user_enable_ai_fn=ask_user_enable_ai_fn,
             attempt_dir_fn=attempt_dir_fn,
+            backup_openclaw_state_fn=backup_openclaw_state_fn,
             clear_repair_progress_fn=clear_repair_progress_fn,
             collect_context_fn=collect_context_fn,
             context_logs_timeout_seconds_fn=context_logs_timeout_seconds_fn,
             evaluate_health_fn=evaluate_health_fn,
+            evaluate_with_context_fn=evaluate_with_context_fn,
             dispatch_notification_fn=dispatch_notification_fn,
             now_ts_fn=now_ts_fn,
             require_stage_payload_fn=require_stage_payload_fn,
             result_from_outcome_fn=result_from_outcome_fn,
+            run_ai_repair_fn=run_ai_repair_fn,
+            run_official_steps_fn=run_official_steps_fn,
+            run_session_command_stage_fn=run_session_command_stage_fn,
             session_stage_has_successful_commands_fn=session_stage_has_successful_commands_fn,
             should_try_soft_pause_fn=should_try_soft_pause_fn,
             write_repair_progress_fn=write_repair_progress_fn,

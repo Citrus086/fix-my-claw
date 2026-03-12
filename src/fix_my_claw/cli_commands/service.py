@@ -10,6 +10,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,7 +18,7 @@ from ..protocol import (
     build_service_reconcile_payload,
     build_service_status_payload,
 )
-from ..shared import setup_logging, _as_path
+from ..shared import _as_path
 from ._config_helpers import load_or_init_config
 
 if TYPE_CHECKING:
@@ -76,9 +77,17 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _copy_fix_my_claw_to_stable_service_path() -> tuple[Path, bool]:
-    source_path = Path(_get_fix_my_claw_path()).resolve()
-    target_path = _get_launchd_service_binary_path()
+def _copy_fix_my_claw_to_stable_service_path(
+    *,
+    _get_fix_my_claw_path_impl: Callable[[], str] | None = None,
+    _get_launchd_service_binary_path_impl: Callable[[], Path] | None = None,
+) -> tuple[Path, bool]:
+    get_fix_my_claw_path = _get_fix_my_claw_path_impl or _get_fix_my_claw_path
+    get_launchd_service_binary_path = (
+        _get_launchd_service_binary_path_impl or _get_launchd_service_binary_path
+    )
+    source_path = Path(get_fix_my_claw_path()).resolve()
+    target_path = get_launchd_service_binary_path()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     desired_mode = source_path.stat().st_mode & 0o777
     if desired_mode & 0o111 == 0:
@@ -110,12 +119,22 @@ def _copy_fix_my_claw_to_stable_service_path() -> tuple[Path, bool]:
     return target_path, True
 
 
-def _generate_launchd_plist(cfg: "AppConfig", config_path: str) -> bytes:
+def _generate_launchd_plist(
+    cfg: "AppConfig",
+    config_path: str,
+    *,
+    _get_launchd_label_impl: Callable[[], str] | None = None,
+    _get_launchd_service_binary_path_impl: Callable[[], Path] | None = None,
+) -> bytes:
+    get_launchd_label = _get_launchd_label_impl or _get_launchd_label
+    get_launchd_service_binary_path = (
+        _get_launchd_service_binary_path_impl or _get_launchd_service_binary_path
+    )
     state_dir = cfg.monitor.state_dir
     plist = {
-        "Label": _get_launchd_label(),
+        "Label": get_launchd_label(),
         "ProgramArguments": [
-            str(_get_launchd_service_binary_path()),
+            str(get_launchd_service_binary_path()),
             "monitor",
             "--config",
             str(_as_path(config_path)),
@@ -133,10 +152,17 @@ def _generate_launchd_plist(cfg: "AppConfig", config_path: str) -> bytes:
     return plistlib.dumps(plist)
 
 
-def _write_launchd_plist(cfg: "AppConfig", config_path: str, plist_path: Path) -> None:
+def _write_launchd_plist(
+    cfg: "AppConfig",
+    config_path: str,
+    plist_path: Path,
+    *,
+    _generate_launchd_plist_impl: Callable[["AppConfig", str], bytes] | None = None,
+) -> None:
+    generate_launchd_plist = _generate_launchd_plist_impl or _generate_launchd_plist
     cfg.monitor.state_dir.mkdir(parents=True, exist_ok=True)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    plist_path.write_bytes(_generate_launchd_plist(cfg, config_path))
+    plist_path.write_bytes(generate_launchd_plist(cfg, config_path))
 
 
 def _launchctl_run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -215,8 +241,14 @@ def _raise_launchctl_error(result: subprocess.CompletedProcess[str]) -> None:
     )
 
 
-def _inspect_loaded_launchd_service() -> tuple[bool, dict[str, str | None] | None]:
-    result = _launchctl_run("print", _get_launchd_job_target(), check=False)
+def _inspect_loaded_launchd_service(
+    *,
+    _launchctl_run_impl: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    _get_launchd_job_target_impl: Callable[[], str] | None = None,
+) -> tuple[bool, dict[str, str | None] | None]:
+    launchctl_run = _launchctl_run_impl or _launchctl_run
+    get_launchd_job_target = _get_launchd_job_target_impl or _get_launchd_job_target
+    result = launchctl_run("print", get_launchd_job_target(), check=False)
     if result.returncode == 0:
         return True, _parse_launchctl_print_metadata(result.stdout)
     if _launchctl_result_indicates_missing_service(result):
@@ -224,19 +256,42 @@ def _inspect_loaded_launchd_service() -> tuple[bool, dict[str, str | None] | Non
     _raise_launchctl_error(result)
 
 
-def _launchd_service_loaded() -> bool:
-    loaded, _ = _inspect_loaded_launchd_service()
+def _launchd_service_loaded(
+    *,
+    _launchctl_run_impl: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    _get_launchd_job_target_impl: Callable[[], str] | None = None,
+) -> bool:
+    loaded, _ = _inspect_loaded_launchd_service(
+        _launchctl_run_impl=_launchctl_run_impl,
+        _get_launchd_job_target_impl=_get_launchd_job_target_impl,
+    )
     return loaded
 
 
-def _ensure_launchd_service_unloaded(plist_path: Path) -> None:
+def _ensure_launchd_service_unloaded(
+    plist_path: Path,
+    *,
+    _launchd_service_loaded_impl: Callable[[], bool] | None = None,
+    _launchctl_run_impl: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    _get_launchd_domain_impl: Callable[[], str] | None = None,
+    _get_launchd_job_target_impl: Callable[[], str] | None = None,
+) -> None:
     """Unload launchd service if it is currently loaded."""
-    if not _launchd_service_loaded():
+    launchctl_run = _launchctl_run_impl or _launchctl_run
+    get_launchd_domain = _get_launchd_domain_impl or _get_launchd_domain
+    get_launchd_job_target = _get_launchd_job_target_impl or _get_launchd_job_target
+    launchd_service_loaded = _launchd_service_loaded_impl or (
+        lambda: _launchd_service_loaded(
+            _launchctl_run_impl=launchctl_run,
+            _get_launchd_job_target_impl=get_launchd_job_target,
+        )
+    )
+    if not launchd_service_loaded():
         return
 
-    result = _launchctl_run("bootout", _get_launchd_domain(), str(plist_path), check=False)
+    result = launchctl_run("bootout", get_launchd_domain(), str(plist_path), check=False)
     if result.returncode != 0:
-        result = _launchctl_run("bootout", _get_launchd_job_target(), check=False)
+        result = launchctl_run("bootout", get_launchd_job_target(), check=False)
     if result.returncode == 0 or _launchctl_result_indicates_missing_service(result):
         return
     _raise_launchctl_error(result)
@@ -246,8 +301,20 @@ def _collect_launchd_service_status(
     *,
     config_path: str | None,
     ignore_launchctl_errors: bool = False,
+    _get_launchd_plist_path_impl: Callable[[], Path] | None = None,
+    _launchctl_run_impl: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    _get_launchd_job_target_impl: Callable[[], str] | None = None,
+    _get_launchd_service_binary_path_impl: Callable[[], Path] | None = None,
+    _get_launchd_label_impl: Callable[[], str] | None = None,
+    _get_launchd_domain_impl: Callable[[], str] | None = None,
 ) -> dict[str, object]:
-    plist_path = _get_launchd_plist_path()
+    get_launchd_plist_path = _get_launchd_plist_path_impl or _get_launchd_plist_path
+    get_launchd_service_binary_path = (
+        _get_launchd_service_binary_path_impl or _get_launchd_service_binary_path
+    )
+    get_launchd_label = _get_launchd_label_impl or _get_launchd_label
+    get_launchd_domain = _get_launchd_domain_impl or _get_launchd_domain
+    plist_path = get_launchd_plist_path()
     installed = plist_path.exists()
     running = False
     loaded_metadata: dict[str, str | None] | None = None
@@ -255,7 +322,10 @@ def _collect_launchd_service_status(
 
     if installed:
         try:
-            running, loaded_metadata = _inspect_loaded_launchd_service()
+            running, loaded_metadata = _inspect_loaded_launchd_service(
+                _launchctl_run_impl=_launchctl_run_impl,
+                _get_launchd_job_target_impl=_get_launchd_job_target_impl,
+            )
         except subprocess.CalledProcessError:
             if not ignore_launchctl_errors:
                 raise
@@ -265,7 +335,7 @@ def _collect_launchd_service_status(
 
     program_path = (loaded_metadata or {}).get("program_path") or plist_metadata["program_path"]
     actual_config_path = (loaded_metadata or {}).get("config_path") or plist_metadata["config_path"]
-    expected_program_path = str(_get_launchd_service_binary_path())
+    expected_program_path = str(get_launchd_service_binary_path())
     expected_config_path = _expected_launchd_config_path(config_path)
 
     drifted = installed and program_path != expected_program_path
@@ -275,9 +345,9 @@ def _collect_launchd_service_status(
     return build_service_status_payload(
         installed=installed,
         running=running,
-        label=_get_launchd_label(),
+        label=get_launchd_label(),
         plist_path=str(plist_path),
-        domain=_get_launchd_domain(),
+        domain=get_launchd_domain(),
         program_path=program_path,
         config_path=actual_config_path,
         expected_program_path=expected_program_path,
@@ -294,12 +364,29 @@ def _emit_service_status(payload: dict[str, object], *, as_json: bool) -> None:
     print(f"running={'true' if payload['running'] else 'false'}")
 
 
-def _restart_launchd_service(cfg: "AppConfig", config_path: str, plist_path: Path) -> None:
-    _write_launchd_plist(cfg, config_path, plist_path)
-    _ensure_launchd_service_unloaded(plist_path)
-    _launchctl_run("bootstrap", _get_launchd_domain(), str(plist_path))
-    _launchctl_run("enable", _get_launchd_job_target())
-    _launchctl_run("kickstart", "-k", _get_launchd_job_target())
+def _restart_launchd_service(
+    cfg: "AppConfig",
+    config_path: str,
+    plist_path: Path,
+    *,
+    _write_launchd_plist_impl: Callable[["AppConfig", str, Path], None] | None = None,
+    _ensure_launchd_service_unloaded_impl: Callable[[Path], None] | None = None,
+    _launchctl_run_impl: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    _get_launchd_domain_impl: Callable[[], str] | None = None,
+    _get_launchd_job_target_impl: Callable[[], str] | None = None,
+) -> None:
+    write_launchd_plist = _write_launchd_plist_impl or _write_launchd_plist
+    ensure_launchd_service_unloaded = (
+        _ensure_launchd_service_unloaded_impl or _ensure_launchd_service_unloaded
+    )
+    launchctl_run = _launchctl_run_impl or _launchctl_run
+    get_launchd_domain = _get_launchd_domain_impl or _get_launchd_domain
+    get_launchd_job_target = _get_launchd_job_target_impl or _get_launchd_job_target
+    write_launchd_plist(cfg, config_path, plist_path)
+    ensure_launchd_service_unloaded(plist_path)
+    launchctl_run("bootstrap", get_launchd_domain(), str(plist_path))
+    launchctl_run("enable", get_launchd_job_target())
+    launchctl_run("kickstart", "-k", get_launchd_job_target())
 
 
 def _service_reconcile_reasons(
@@ -323,31 +410,51 @@ def _service_reconcile_reasons(
     return reasons
 
 
-def _reconcile_launchd_service(cfg: "AppConfig", config_path: str) -> dict[str, object]:
-    initial_status = _collect_launchd_service_status(config_path=config_path)
-    _, binary_updated = _copy_fix_my_claw_to_stable_service_path()
-    reasons = _service_reconcile_reasons(
+def _reconcile_launchd_service(
+    cfg: "AppConfig",
+    config_path: str,
+    *,
+    _collect_launchd_service_status_impl: Callable[..., dict[str, object]] | None = None,
+    _copy_fix_my_claw_to_stable_service_path_impl: Callable[[], tuple[Path, bool]] | None = None,
+    _service_reconcile_reasons_impl: Callable[..., list[str]] | None = None,
+    _get_launchd_plist_path_impl: Callable[[], Path] | None = None,
+    _restart_launchd_service_impl: Callable[["AppConfig", str, Path], None] | None = None,
+) -> dict[str, object]:
+    collect_launchd_service_status = (
+        _collect_launchd_service_status_impl or _collect_launchd_service_status
+    )
+    copy_fix_my_claw_to_stable_service_path = (
+        _copy_fix_my_claw_to_stable_service_path_impl or _copy_fix_my_claw_to_stable_service_path
+    )
+    service_reconcile_reasons = (
+        _service_reconcile_reasons_impl or _service_reconcile_reasons
+    )
+    get_launchd_plist_path = _get_launchd_plist_path_impl or _get_launchd_plist_path
+    restart_launchd_service = _restart_launchd_service_impl or _restart_launchd_service
+    initial_status = collect_launchd_service_status(config_path=config_path)
+    _, binary_updated = copy_fix_my_claw_to_stable_service_path()
+    reasons = service_reconcile_reasons(
         status_payload=initial_status,
         binary_updated=binary_updated,
     )
 
     action = "noop"
-    plist_path = _get_launchd_plist_path()
+    plist_path = get_launchd_plist_path()
     installed = bool(initial_status["installed"])
     running = bool(initial_status["running"])
     drifted = bool(initial_status["drifted"])
 
     if not installed:
-        _restart_launchd_service(cfg, config_path, plist_path)
+        restart_launchd_service(cfg, config_path, plist_path)
         action = "installed"
     elif drifted or binary_updated:
-        _restart_launchd_service(cfg, config_path, plist_path)
+        restart_launchd_service(cfg, config_path, plist_path)
         action = "updated"
     elif not running:
-        _restart_launchd_service(cfg, config_path, plist_path)
+        restart_launchd_service(cfg, config_path, plist_path)
         action = "restarted"
 
-    final_status = _collect_launchd_service_status(config_path=config_path)
+    final_status = collect_launchd_service_status(config_path=config_path)
     return build_service_reconcile_payload(
         action=action,
         reasons=reasons,
@@ -358,15 +465,16 @@ def _reconcile_launchd_service(cfg: "AppConfig", config_path: str) -> dict[str, 
 def cmd_service_install(
     args: argparse.Namespace,
     *,
-    load_config: callable,
-    write_default_config: callable,
+    load_or_init_config_impl: Callable[..., "AppConfig"] = load_or_init_config,
+    _service_platform_supported_impl: Callable[[], bool] | None = None,
     _get_launchd_plist_path_impl: callable | None = None,
     _copy_fix_my_claw_to_stable_service_path_impl: callable | None = None,
     _restart_launchd_service_impl: callable | None = None,
     _ensure_launchd_service_unloaded_impl: callable | None = None,
 ) -> int:
     """Install the launchd service."""
-    if not _service_platform_supported():
+    service_platform_supported = _service_platform_supported_impl or _service_platform_supported
+    if not service_platform_supported():
         print("service commands are supported on macOS only", file=sys.stderr)
         return 1
     
@@ -375,13 +483,8 @@ def cmd_service_install(
     _restart_service = _restart_launchd_service_impl or _restart_launchd_service
     _unload_service = _ensure_launchd_service_unloaded_impl or _ensure_launchd_service_unloaded
     
-    cfg = load_or_init_config(
-        args.config,
-        init_if_missing=True,
-        write_default_config=write_default_config,
-        load_config=load_config,
-    )
-    plist_path = _get_launchd_plist_path()
+    cfg = load_or_init_config_impl(args.config, init_if_missing=True)
+    plist_path = _get_plist_path()
     if plist_path.exists():
         print(f"service already installed at {plist_path}", file=sys.stderr)
         return 1
@@ -391,14 +494,14 @@ def cmd_service_install(
     bootstrapped = False
 
     try:
-        _copy_fix_my_claw_to_stable_service_path()
+        _copy_binary()
         plist_created = True
-        _restart_launchd_service(cfg, args.config, plist_path)
+        _restart_service(cfg, args.config, plist_path)
         bootstrapped = True
     except (FileNotFoundError, OSError, subprocess.CalledProcessError) as exc:
         # Clean up on partial failure
         if bootstrapped:
-            _ensure_launchd_service_unloaded(plist_path)
+            _unload_service(plist_path)
         if plist_created:
             try:
                 plist_path.unlink(missing_ok=True)
@@ -410,17 +513,28 @@ def cmd_service_install(
     return 0
 
 
-def cmd_service_uninstall(args: argparse.Namespace) -> int:
+def cmd_service_uninstall(
+    args: argparse.Namespace,
+    *,
+    _service_platform_supported_impl: Callable[[], bool] | None = None,
+    _get_launchd_plist_path_impl: Callable[[], Path] | None = None,
+    _ensure_launchd_service_unloaded_impl: Callable[[Path], None] | None = None,
+) -> int:
     """Uninstall the launchd service."""
-    if not _service_platform_supported():
+    service_platform_supported = _service_platform_supported_impl or _service_platform_supported
+    get_launchd_plist_path = _get_launchd_plist_path_impl or _get_launchd_plist_path
+    ensure_launchd_service_unloaded = (
+        _ensure_launchd_service_unloaded_impl or _ensure_launchd_service_unloaded
+    )
+    if not service_platform_supported():
         print("service commands are supported on macOS only", file=sys.stderr)
         return 1
-    plist_path = _get_launchd_plist_path()
+    plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         print("service not installed")
         return 0
     try:
-        _ensure_launchd_service_unloaded(plist_path)
+        ensure_launchd_service_unloaded(plist_path)
     except subprocess.CalledProcessError as exc:
         print(f"error stopping service: {exc.stderr.strip() if exc.stderr else exc}", file=sys.stderr)
         return 1
@@ -436,28 +550,27 @@ def cmd_service_uninstall(args: argparse.Namespace) -> int:
 def cmd_service_start(
     args: argparse.Namespace,
     *,
-    load_config: callable,
-    write_default_config: callable,
+    load_or_init_config_impl: Callable[..., "AppConfig"] = load_or_init_config,
     default_config_path: str,
+    _service_platform_supported_impl: Callable[[], bool] | None = None,
+    _get_launchd_plist_path_impl: Callable[[], Path] | None = None,
+    _restart_launchd_service_impl: Callable[["AppConfig", str, Path], None] | None = None,
 ) -> int:
     """Start the launchd service."""
-    if not _service_platform_supported():
+    service_platform_supported = _service_platform_supported_impl or _service_platform_supported
+    get_launchd_plist_path = _get_launchd_plist_path_impl or _get_launchd_plist_path
+    restart_launchd_service = _restart_launchd_service_impl or _restart_launchd_service
+    if not service_platform_supported():
         print("service commands are supported on macOS only", file=sys.stderr)
         return 1
     config_path = getattr(args, "config", default_config_path)
-    cfg = load_or_init_config(
-        config_path,
-        init_if_missing=True,
-        write_default_config=write_default_config,
-        load_config=load_config,
-    )
-    plist_path = _get_launchd_plist_path()
+    cfg = load_or_init_config_impl(config_path, init_if_missing=True)
+    plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         print("service not installed", file=sys.stderr)
         return 1
     try:
-        _copy_fix_my_claw_to_stable_service_path()
-        _restart_launchd_service(cfg, config_path, plist_path)
+        restart_launchd_service(cfg, config_path, plist_path)
     except (OSError, subprocess.CalledProcessError) as exc:
         stderr = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         print(f"error starting service: {stderr}", file=sys.stderr)
@@ -466,17 +579,28 @@ def cmd_service_start(
     return 0
 
 
-def cmd_service_stop(args: argparse.Namespace) -> int:
+def cmd_service_stop(
+    args: argparse.Namespace,
+    *,
+    _service_platform_supported_impl: Callable[[], bool] | None = None,
+    _get_launchd_plist_path_impl: Callable[[], Path] | None = None,
+    _ensure_launchd_service_unloaded_impl: Callable[[Path], None] | None = None,
+) -> int:
     """Stop the launchd service."""
-    if not _service_platform_supported():
+    service_platform_supported = _service_platform_supported_impl or _service_platform_supported
+    get_launchd_plist_path = _get_launchd_plist_path_impl or _get_launchd_plist_path
+    ensure_launchd_service_unloaded = (
+        _ensure_launchd_service_unloaded_impl or _ensure_launchd_service_unloaded
+    )
+    if not service_platform_supported():
         print("service commands are supported on macOS only", file=sys.stderr)
         return 1
-    plist_path = _get_launchd_plist_path()
+    plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         print("service not installed")
         return 0
     try:
-        _ensure_launchd_service_unloaded(plist_path)
+        ensure_launchd_service_unloaded(plist_path)
     except subprocess.CalledProcessError as exc:
         print(f"error stopping service: {exc.stderr.strip() if exc.stderr else exc}", file=sys.stderr)
         return 1
@@ -488,12 +612,18 @@ def cmd_service_status(
     args: argparse.Namespace,
     *,
     default_config_path: str,
+    _service_platform_supported_impl: Callable[[], bool] | None = None,
+    _collect_launchd_service_status_impl: Callable[..., dict[str, object]] | None = None,
 ) -> int:
     """Show launchd service status."""
-    if not _service_platform_supported():
+    service_platform_supported = _service_platform_supported_impl or _service_platform_supported
+    collect_launchd_service_status = (
+        _collect_launchd_service_status_impl or _collect_launchd_service_status
+    )
+    if not service_platform_supported():
         print("service commands are supported on macOS only", file=sys.stderr)
         return 1
-    payload = _collect_launchd_service_status(
+    payload = collect_launchd_service_status(
         config_path=getattr(args, "config", default_config_path),
         ignore_launchctl_errors=True,
     )
@@ -504,22 +634,23 @@ def cmd_service_status(
 def cmd_service_reconcile(
     args: argparse.Namespace,
     *,
-    load_config: callable,
-    write_default_config: callable,
+    load_or_init_config_impl: Callable[..., "AppConfig"] = load_or_init_config,
+    default_config_path: str,
+    _service_platform_supported_impl: Callable[[], bool] | None = None,
+    _reconcile_launchd_service_impl: Callable[["AppConfig", str], dict[str, object]] | None = None,
 ) -> int:
     """Align the launchd service plist, binary path, and loaded job."""
-    if not _service_platform_supported():
+    service_platform_supported = _service_platform_supported_impl or _service_platform_supported
+    reconcile_launchd_service = (
+        _reconcile_launchd_service_impl or _reconcile_launchd_service
+    )
+    if not service_platform_supported():
         print("service commands are supported on macOS only", file=sys.stderr)
         return 1
-    config_path = getattr(args, "config", None)
-    cfg = load_or_init_config(
-        config_path,
-        init_if_missing=True,
-        write_default_config=write_default_config,
-        load_config=load_config,
-    )
+    config_path = getattr(args, "config", default_config_path)
+    cfg = load_or_init_config_impl(config_path, init_if_missing=True)
     try:
-        payload = _reconcile_launchd_service(cfg, config_path)
+        payload = reconcile_launchd_service(cfg, config_path)
     except (FileNotFoundError, OSError, subprocess.CalledProcessError) as exc:
         stderr = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         print(f"error reconciling service: {stderr}", file=sys.stderr)

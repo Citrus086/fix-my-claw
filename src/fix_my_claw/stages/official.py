@@ -12,6 +12,7 @@ from ..repair_types import (
     StageResult,
     _coerce_execution_records,
 )
+from .base import require_runtime_hooks, write_stage_progress
 
 if TYPE_CHECKING:
     from ..repair_types import RepairPipelineContext
@@ -34,24 +35,25 @@ class OfficialRepairStage:
         Returns:
             StageResult with OfficialRepairStageData and health evaluation.
         """
-        from ..repair import _collect_context, _run_official_steps, write_repair_progress
-
-        write_repair_progress(
+        runtime = require_runtime_hooks(ctx)
+        write_stage_progress(
             ctx.cfg.monitor.state_dir,
-            stage="official",
-            status="running",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
+            "official",
+            "running",
+            str(ctx.attempt_dir.resolve()),
+            runtime.write_repair_progress_fn,
         )
-        steps, evaluation, break_reason = _run_official_steps(
+        steps, evaluation, break_reason = runtime.run_official_steps_fn(
             ctx.cfg,
             ctx.attempt_dir,
             break_on_healthy=True,
         )
-        write_repair_progress(
+        write_stage_progress(
             ctx.cfg.monitor.state_dir,
-            stage="official",
-            status="completed",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
+            "official",
+            "completed",
+            str(ctx.attempt_dir.resolve()),
+            runtime.write_repair_progress_fn,
         )
         return StageResult(
             name="official",
@@ -61,6 +63,6 @@ class OfficialRepairStage:
                 break_reason=break_reason,
             ),
             evaluation=evaluation,
-            context=_collect_context(evaluation, ctx.attempt_dir, stage_name="after_official"),
+            context=runtime.collect_context_fn(evaluation, ctx.attempt_dir, stage_name="after_official"),
             stop_reason=break_reason,
         )

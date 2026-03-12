@@ -8,7 +8,8 @@ from .health import HealthEvaluation
 from .messages import manual_repair_acknowledged, monitor_unhealthy_skipped
 from .notification_events import _clean_fix_my_claw_message, dispatch_notification_event
 from .notify import _notify_send, _poll_manual_repair_command
-from .repair import _evaluate_health, attempt_repair
+from .repair import attempt_repair
+from .repair_runtime import _evaluate_health
 from .state import StateStore
 
 # Constants for monitor loop behavior

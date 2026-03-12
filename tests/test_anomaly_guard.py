@@ -17,9 +17,13 @@ from fix_my_claw import config as config_module
 from fix_my_claw import health as health_module
 from fix_my_claw import monitor
 from fix_my_claw import notify as notify_module
+from fix_my_claw import repair_ops as repair_ops_module
 from fix_my_claw import repair as repair_module
+from fix_my_claw import repair_runtime as repair_runtime_module
+from fix_my_claw import repair_types as repair_types_module
 from fix_my_claw import runtime as runtime_module
 from fix_my_claw import shared as shared_module
+from fix_my_claw import stages as stages_module
 from fix_my_claw import state as state_module
 
 # Test constants for Discord IDs (example values, not real)
@@ -107,7 +111,7 @@ def _make_official_steps_result(
         _make_health_evaluation(
             effective_healthy=effective_healthy,
             anomaly_guard=anomaly_guard,
-            reason=repair_module.repair_ops._anomaly_guard_reason(anomaly_guard),
+            reason=repair_ops_module._anomaly_guard_reason(anomaly_guard),
         ),
         break_reason or ("healthy" if effective_healthy else "steps_exhausted"),
     )
@@ -293,12 +297,16 @@ class TestAnomalyGuardBehavior(unittest.TestCase):
             json_data={},
         )
 
-        with patch.object(repair_module, "probe_health", return_value=ok_probe), patch.object(
-            repair_module, "probe_status", return_value=status_probe
-        ), patch.object(
-            repair_module,
-            "_analyze_anomaly_guard",
-            return_value={"triggered": True, "signals": {"ping_pong_trigger": True}},
+        with patch.object(
+            monitor,
+            "_evaluate_health",
+            return_value=_make_health_evaluation(
+                effective_healthy=False,
+                probe_healthy=True,
+                anomaly_guard={"triggered": True, "signals": {"ping_pong_trigger": True}},
+                health_probe=ok_probe,
+                status_probe=status_probe,
+            ),
         ):
             result = monitor.run_check(cfg, store)
             self.assertFalse(result.healthy)
@@ -1816,19 +1824,12 @@ class TestRepairFlow(unittest.TestCase):
     def test_attempt_repair_skips_when_already_healthy(self) -> None:
         cfg = self._isolated_cfg()
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_evaluate_health",
             return_value=_make_health_evaluation(effective_healthy=True),
-        ), patch.object(
-            repair_module, "_notify_send"
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(repair_runtime_module, "_notify_send"
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -1844,23 +1845,14 @@ class TestRepairFlow(unittest.TestCase):
     def test_attempt_repair_manual_request_runs_full_flow_when_already_healthy(self) -> None:
         cfg = self._isolated_cfg()
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={"healthy": True}), patch.object(
-            repair_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={"healthy": True}), patch.object(repair_runtime_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             return_value=_make_health_evaluation(effective_healthy=True),
-        ), patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason="manual_discord")
@@ -1885,19 +1877,12 @@ class TestRepairFlow(unittest.TestCase):
             repair=config_module.RepairConfig(enabled=False, official_steps=[], soft_pause_enabled=False),
         )
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_evaluate_health",
             return_value=_make_health_evaluation(effective_healthy=False),
-        ), patch.object(
-            repair_module, "_notify_send"
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(repair_runtime_module, "_notify_send"
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -1921,23 +1906,14 @@ class TestRepairFlow(unittest.TestCase):
         )
         store = state_module.StateStore(cfg.monitor.state_dir)
         store.save(state_module.State(last_repair_ts=1_000))
-        with patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_evaluate_health",
             return_value=_make_health_evaluation(effective_healthy=False),
         ), patch.object(
             state_module, "_now_ts", return_value=1_010
-        ), patch.object(
-            repair_module, "_now_ts", return_value=1_010
-        ), patch.object(
-            repair_module, "_notify_send"
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(repair_runtime_module, "_notify_send"
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=False, reason=None)
@@ -1954,32 +1930,20 @@ class TestRepairFlow(unittest.TestCase):
     def test_yes_runs_backup_then_ai(self) -> None:
         cfg = self._isolated_cfg()
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=True),
             ],
-        ), patch.object(
-            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
-        ), patch.object(
-            repair_module, "_backup_openclaw_state", return_value={"archive": "/tmp/openclaw.backup.tar.gz"}
-        ) as backup_mock, patch.object(
-            repair_module, "_run_ai_repair", return_value=self._cmd_ok()
-        ) as ai_mock, patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(notify_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
+        ), patch.object(repair_runtime_module, "_backup_openclaw_state", return_value={"archive": "/tmp/openclaw.backup.tar.gz"}
+        ) as backup_mock, patch.object(repair_runtime_module, "_run_ai_repair", return_value=self._cmd_ok()
+        ) as ai_mock, patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -2012,23 +1976,14 @@ class TestRepairFlow(unittest.TestCase):
     def test_attempt_repair_exposes_typed_stage_pipeline(self) -> None:
         cfg = self._isolated_cfg()
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={"healthy": True}), patch.object(
-            repair_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={"healthy": True}), patch.object(repair_runtime_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             return_value=_make_health_evaluation(effective_healthy=False),
-        ), patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason="anomaly_guard")
@@ -2040,8 +1995,8 @@ class TestRepairFlow(unittest.TestCase):
             if outcome is None:
                 self.fail("expected typed repair outcome")
             self.assertEqual([stage.name for stage in outcome.stages], ["terminate", "new", "official"])
-            self.assertIsInstance(outcome.stages[0].payload, repair_module.SessionStageData)
-            self.assertIsInstance(outcome.stages[2].payload, repair_module.OfficialRepairStageData)
+            self.assertIsInstance(outcome.stages[0].payload, repair_types_module.SessionStageData)
+            self.assertIsInstance(outcome.stages[2].payload, repair_types_module.OfficialRepairStageData)
             self.assertEqual(result.details.get("official_break_reason"), "healthy")
             self.assertEqual(result.details.get("reason"), "anomaly_guard")
             self.assertTrue(any("分层修复已完成" in msg for msg in self._notify_messages(notify_mock)))
@@ -2067,26 +2022,20 @@ class TestRepairFlow(unittest.TestCase):
             ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module,
-            "_run_session_command_stage",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage",
             side_effect=[
                 [{"agent": "macs-orchestrator", "argv": ["openclaw"], "exit_code": 0, "duration_ms": 1, "stdout_path": "a", "stderr_path": "b"}],
                 [],
             ],
-        ) as stage_mock, patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        ) as stage_mock, patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=True),
             ],
-        ), patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
+        ), patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
         ) as notify_mock, patch.object(
-            repair_module.time, "sleep", return_value=None
+            repair_runtime_module.time, "sleep", return_value=None
         ):
             result = repair_module.attempt_repair(cfg, store, force=True, reason="queue_contamination")
 
@@ -2100,8 +2049,8 @@ class TestRepairFlow(unittest.TestCase):
         if outcome is None:
             self.fail("expected typed repair outcome")
         terminate_payload = outcome.stages[0].payload
-        self.assertIsInstance(terminate_payload, repair_module.SessionStageData)
-        if not isinstance(terminate_payload, repair_module.SessionStageData):
+        self.assertIsInstance(terminate_payload, repair_types_module.SessionStageData)
+        if not isinstance(terminate_payload, repair_types_module.SessionStageData):
             self.fail("expected SessionStageData payload")
         self.assertEqual(result.details.get("reason"), "queue_contamination")
         self.assertTrue(any("已执行 /stop 并完成复检" in msg for msg in self._notify_messages(notify_mock)))
@@ -2126,28 +2075,19 @@ class TestRepairFlow(unittest.TestCase):
             "stdout_path": "/tmp/pause.stdout",
             "stderr_path": "/tmp/pause.stderr",
         }
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[pause_command]
-        ), patch.object(
-            repair_module, "_run_official_steps"
-        ) as official_mock, patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[pause_command]
+        ), patch.object(repair_runtime_module, "_run_official_steps"
+        ) as official_mock, patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=True),
             ],
-        ), patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
+        ), patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
         ) as notify_mock, patch.object(
-            repair_module.time, "sleep", return_value=None
-        ) as sleep_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+            repair_runtime_module.time, "sleep", return_value=None
+        ) as sleep_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -2187,26 +2127,20 @@ class TestRepairFlow(unittest.TestCase):
             ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module,
-            "_run_session_command_stage",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage",
             side_effect=[
                 [{"agent": "macs-orchestrator", "argv": ["openclaw"], "exit_code": 0, "duration_ms": 1, "stdout_path": "a", "stderr_path": "b"}],
                 [],
             ],
-        ) as stage_mock, patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        ) as stage_mock, patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=True)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
+        ), patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
         ), patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ), patch.object(
-            repair_module.time, "sleep", return_value=None
+            repair_runtime_module.time, "sleep", return_value=None
         ) as sleep_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason="queue_contamination")
 
@@ -2224,35 +2158,24 @@ class TestRepairFlow(unittest.TestCase):
         )
         store = state_module.StateStore(cfg.monitor.state_dir)
         failed_status = _make_probe("status", exit_code=1, stdout="", json_data=None)
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module,
-            "_run_session_command_stage",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage",
             side_effect=[
                 [{"agent": "macs-orchestrator", "argv": ["openclaw"], "exit_code": 0, "duration_ms": 1, "stdout_path": "a", "stderr_path": "b"}],
                 [],
             ],
-        ) as stage_mock, patch.object(
-            repair_module,
-            "_run_official_steps",
+        ) as stage_mock, patch.object(repair_runtime_module, "_run_official_steps",
             return_value=_make_official_steps_result(effective_healthy=True, break_reason="healthy"),
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             return_value=_make_health_evaluation(
                 effective_healthy=False,
                 probe_healthy=False,
                 reason="probe_failed",
                 status_probe=failed_status,
             ),
-        ), patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -2280,23 +2203,16 @@ class TestRepairFlow(unittest.TestCase):
     def test_timeout_never_runs_ai(self) -> None:
         cfg = self._cfg()
         store = state_module.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
-        ), patch.object(
-            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "timeout"}
-        ), patch.object(
-            repair_module, "_run_ai_repair"
-        ) as ai_mock, patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
+        ), patch.object(notify_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "timeout"}
+        ), patch.object(repair_runtime_module, "_run_ai_repair"
+        ) as ai_mock, patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
         ):
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertFalse(result.used_ai)
@@ -2305,23 +2221,16 @@ class TestRepairFlow(unittest.TestCase):
     def test_gui_no_decision_wins_and_is_notified_once(self) -> None:
         cfg = self._cfg()
         store = state_module.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
-        ), patch.object(
-            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "no", "source": "gui"}
-        ), patch.object(
-            repair_module, "_run_ai_repair"
-        ) as ai_mock, patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
+        ), patch.object(notify_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "no", "source": "gui"}
+        ), patch.object(repair_runtime_module, "_run_ai_repair"
+        ) as ai_mock, patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
         ) as notify_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertFalse(result.used_ai)
@@ -2336,30 +2245,19 @@ class TestRepairFlow(unittest.TestCase):
             ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
-        ), patch.object(
-            repair_module, "_ask_user_enable_ai"
-        ) as ask_mock, patch.object(
-            repair_module, "_run_ai_repair"
-        ) as ai_mock, patch.object(
-            repair_module, "_notify_send"
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(notify_module, "_ask_user_enable_ai"
+        ) as ask_mock, patch.object(repair_runtime_module, "_run_ai_repair"
+        ) as ai_mock, patch.object(repair_runtime_module, "_notify_send"
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -2388,30 +2286,19 @@ class TestRepairFlow(unittest.TestCase):
             ai=config_module.AiConfig(enabled=True, allow_code_changes=False, max_attempts_per_day=0),
         )
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
-        ), patch.object(
-            repair_module, "_ask_user_enable_ai"
-        ) as ask_mock, patch.object(
-            repair_module, "_run_ai_repair"
-        ) as ai_mock, patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(notify_module, "_ask_user_enable_ai"
+        ) as ask_mock, patch.object(repair_runtime_module, "_run_ai_repair"
+        ) as ai_mock, patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -2449,8 +2336,8 @@ class TestRepairFlow(unittest.TestCase):
             ),
             logs_probe=runtime_module.CmdResult(argv=["openclaw"], cwd=None, exit_code=0, duration_ms=1, stdout="l", stderr=""),
         )
-        before = repair_module._collect_context(evaluation, attempt_dir, stage_name="before")
-        after = repair_module._collect_context(evaluation, attempt_dir, stage_name="after_official")
+        before = repair_runtime_module._collect_context(evaluation, attempt_dir, stage_name="before")
+        after = repair_runtime_module._collect_context(evaluation, attempt_dir, stage_name="after_official")
         self.assertNotEqual(before["logs"]["stdout_path"], after["logs"]["stdout_path"])
         self.assertTrue(Path(before["logs"]["stdout_path"]).exists())
         self.assertTrue(Path(after["logs"]["stdout_path"]).exists())
@@ -2462,9 +2349,9 @@ class TestRepairFlow(unittest.TestCase):
                 log_file=Path(tempfile.mkdtemp()) / "fix-my-claw.log",
             )
         )
-        with patch.object(repair_module.time, "strftime", return_value="20260306-220000"):
-            first = repair_module._attempt_dir(cfg)
-            second = repair_module._attempt_dir(cfg)
+        with patch.object(repair_runtime_module.time, "strftime", return_value="20260306-220000"):
+            first = repair_runtime_module._attempt_dir(cfg)
+            second = repair_runtime_module._attempt_dir(cfg)
         self.assertNotEqual(first, second)
         self.assertTrue(first.exists())
         self.assertTrue(second.exists())
@@ -2478,8 +2365,7 @@ class TestRepairFlow(unittest.TestCase):
             )
         )
         store = state_module.StateStore(state_dir)
-        with patch.object(repair_module, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)), patch.object(
-            repair_module, "_attempt_dir", side_effect=RuntimeError("boom")
+        with patch.object(repair_runtime_module, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)), patch.object(repair_runtime_module, "_attempt_dir", side_effect=RuntimeError("boom")
         ):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 repair_module.attempt_repair(cfg, store, force=False, reason=None)
@@ -2488,12 +2374,11 @@ class TestRepairFlow(unittest.TestCase):
     def test_run_official_steps_skips_empty_step_at_runtime(self) -> None:
         cfg = config_module.AppConfig(repair=config_module.RepairConfig(official_steps=[[], ["openclaw", "gateway", "restart"]]))
         attempt_dir = Path(tempfile.mkdtemp())
-        with patch.object(repair_module, "run_cmd", return_value=self._cmd_ok()) as run_cmd_mock, patch.object(
-            repair_module, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)
+        with patch.object(repair_runtime_module, "run_cmd", return_value=self._cmd_ok()) as run_cmd_mock, patch.object(repair_runtime_module, "_evaluate_health", return_value=_make_health_evaluation(effective_healthy=False)
         ), patch.object(
-            repair_module.time, "sleep", return_value=None
+            repair_runtime_module.time, "sleep", return_value=None
         ):
-            out, final_evaluation, break_reason = repair_module._run_official_steps(cfg, attempt_dir, break_on_healthy=False)
+            out, final_evaluation, break_reason = repair_runtime_module._run_official_steps(cfg, attempt_dir, break_on_healthy=False)
             self.assertEqual(len(out), 1)
             self.assertFalse(final_evaluation.effective_healthy)
             self.assertEqual(break_reason, "steps_exhausted")
@@ -2506,9 +2391,7 @@ class TestRepairFlow(unittest.TestCase):
             ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
         store = state_module.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(
                     effective_healthy=False,
@@ -2517,16 +2400,11 @@ class TestRepairFlow(unittest.TestCase):
                     reason="anomaly_guard",
                 ),
             ],
-        ), patch.object(
-            repair_module, "_collect_context", return_value={}
-        ), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module,
-            "_run_official_steps",
+        ), patch.object(repair_runtime_module, "_collect_context", return_value={}
+        ), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps",
             return_value=_make_official_steps_result(effective_healthy=True, break_reason="healthy"),
-        ) as official_mock, patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
+        ) as official_mock, patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
         ):
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
             self.assertTrue(result.attempted)
@@ -2536,9 +2414,9 @@ class TestRepairFlow(unittest.TestCase):
     def test_run_ai_repair_writes_stage_scoped_logs(self) -> None:
         cfg = config_module.AppConfig()
         attempt_dir = Path(tempfile.mkdtemp())
-        with patch.object(repair_module, "run_cmd", return_value=self._cmd_ok()):
-            repair_module._run_ai_repair(cfg, attempt_dir, code_stage=False)
-            repair_module._run_ai_repair(cfg, attempt_dir, code_stage=True)
+        with patch.object(repair_runtime_module, "run_cmd", return_value=self._cmd_ok()):
+            repair_runtime_module._run_ai_repair(cfg, attempt_dir, code_stage=False)
+            repair_runtime_module._run_ai_repair(cfg, attempt_dir, code_stage=True)
         self.assertTrue((attempt_dir / "ai.config.stdout.txt").exists())
         self.assertTrue((attempt_dir / "ai.code.stdout.txt").exists())
 
@@ -2564,10 +2442,9 @@ class TestRepairFlow(unittest.TestCase):
                 "deliveryContext": "non-dict-still-should-not-block",
             }
         ]
-        with patch.object(repair_module, "_list_active_sessions", return_value=sessions), patch.object(
-            repair_module, "run_cmd", return_value=self._cmd_ok()
+        with patch.object(repair_runtime_module, "_list_active_sessions", return_value=sessions), patch.object(repair_runtime_module, "run_cmd", return_value=self._cmd_ok()
         ) as run_cmd_mock:
-            out = repair_module._run_session_command_stage(
+            out = repair_runtime_module._run_session_command_stage(
                 cfg,
                 attempt_dir,
                 stage_name="terminate",
@@ -2588,21 +2465,16 @@ class TestRepairFlow(unittest.TestCase):
             ai=config_module.AiConfig(enabled=False, allow_code_changes=False),
         )
         store = state_module.StateStore(Path(tempfile.mkdtemp()))
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", side_effect=[[{"agent": "macs-orchestrator"}], []]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
+        ), patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
         ), patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ), patch.object(
-            repair_module.time, "sleep", return_value=None
+            repair_runtime_module.time, "sleep", return_value=None
         ) as sleep_mock:
             repair_module.attempt_repair(cfg, store, force=True, reason=None)
             sleep_mock.assert_called_once_with(2)
@@ -2611,30 +2483,19 @@ class TestRepairFlow(unittest.TestCase):
         """Test that 'no' decision skips AI repair and notifies correctly."""
         cfg = self._isolated_cfg()
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
-        ), patch.object(
-            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "no"}
-        ), patch.object(
-            repair_module, "_run_ai_repair"
-        ) as ai_mock, patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(notify_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "no"}
+        ), patch.object(repair_runtime_module, "_run_ai_repair"
+        ) as ai_mock, patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -2670,32 +2531,20 @@ class TestRepairFlow(unittest.TestCase):
         """Test that backup error stops AI repair and notifies correctly."""
         cfg = self._isolated_cfg()
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),
                 _make_health_evaluation(effective_healthy=False),
             ],
-        ), patch.object(
-            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
-        ), patch.object(
-            repair_module, "_backup_openclaw_state", side_effect=FileNotFoundError("state dir not found")
-        ), patch.object(
-            repair_module, "_run_ai_repair"
-        ) as ai_mock, patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(notify_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
+        ), patch.object(repair_runtime_module, "_backup_openclaw_state", side_effect=FileNotFoundError("state dir not found")
+        ), patch.object(repair_runtime_module, "_run_ai_repair"
+        ) as ai_mock, patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -2749,35 +2598,21 @@ class TestRepairFlow(unittest.TestCase):
             else:
                 return _make_context_result(False)  # after ai_config - still unhealthy
         
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),  # initial
             ],
-        ), patch.object(
-            repair_module,
-            "_evaluate_with_context",
+        ), patch.object(repair_runtime_module, "_evaluate_with_context",
             side_effect=context_side_effect,
-        ), patch.object(
-            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
-        ), patch.object(
-            repair_module, "_backup_openclaw_state", return_value={"archive": "/tmp/backup.tar.gz"}
-        ), patch.object(
-            repair_module, "_run_ai_repair", return_value=self._cmd_ok()
-        ) as ai_mock, patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(notify_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
+        ), patch.object(repair_runtime_module, "_backup_openclaw_state", return_value={"archive": "/tmp/backup.tar.gz"}
+        ), patch.object(repair_runtime_module, "_run_ai_repair", return_value=self._cmd_ok()
+        ) as ai_mock, patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -2819,33 +2654,21 @@ class TestRepairFlow(unittest.TestCase):
         """Test final failure when all repair stages fail."""
         cfg = self._isolated_cfg()
         store = state_module.StateStore(cfg.monitor.state_dir)
-        with patch.object(repair_module, "_collect_context", return_value={}), patch.object(
-            repair_module, "_run_session_command_stage", return_value=[]
-        ), patch.object(
-            repair_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
-        ), patch.object(
-            repair_module,
-            "_evaluate_health",
+        with patch.object(repair_runtime_module, "_collect_context", return_value={}), patch.object(repair_runtime_module, "_run_session_command_stage", return_value=[]
+        ), patch.object(repair_runtime_module, "_run_official_steps", return_value=_make_official_steps_result(effective_healthy=False)
+        ), patch.object(repair_runtime_module, "_evaluate_health",
             side_effect=[
                 _make_health_evaluation(effective_healthy=False),  # initial
                 _make_health_evaluation(effective_healthy=False),  # after official
                 _make_health_evaluation(effective_healthy=False),  # after ai_config
             ],
-        ), patch.object(
-            repair_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
-        ), patch.object(
-            repair_module, "_backup_openclaw_state", return_value={"archive": "/tmp/backup.tar.gz"}
-        ), patch.object(
-            repair_module, "_run_ai_repair", return_value=self._cmd_ok()
-        ), patch.object(
-            repair_module, "_notify_send", return_value={"sent": True}
-        ) as notify_mock, patch.object(
-            repair_module,
-            "write_repair_progress",
+        ), patch.object(notify_module, "_ask_user_enable_ai", return_value={"asked": True, "decision": "yes"}
+        ), patch.object(repair_runtime_module, "_backup_openclaw_state", return_value={"archive": "/tmp/backup.tar.gz"}
+        ), patch.object(repair_runtime_module, "_run_ai_repair", return_value=self._cmd_ok()
+        ), patch.object(repair_runtime_module, "_notify_send", return_value={"sent": True}
+        ) as notify_mock, patch.object(shared_module, "write_repair_progress",
             wraps=shared_module.write_repair_progress,
-        ) as write_progress_mock, patch.object(
-            repair_module,
-            "clear_repair_progress",
+        ) as write_progress_mock, patch.object(shared_module, "clear_repair_progress",
             wraps=shared_module.clear_repair_progress,
         ) as clear_progress_mock:
             result = repair_module.attempt_repair(cfg, store, force=True, reason=None)
@@ -2909,10 +2732,9 @@ class TestHealthDetailsAndLogging(unittest.TestCase):
             ),
             json_data={},
         )
-        with patch.object(repair_module, "probe_health", return_value=failed_probe), patch.object(
-            repair_module, "probe_status", return_value=ok_probe
+        with patch.object(repair_runtime_module, "probe_health", return_value=failed_probe), patch.object(repair_runtime_module, "probe_status", return_value=ok_probe
         ):
-            evaluation = repair_module._evaluate_health(cfg)
+            evaluation = repair_runtime_module._evaluate_health(cfg)
             self.assertFalse(evaluation.effective_healthy)
             self.assertFalse(evaluation.probe_healthy)
             self.assertEqual(evaluation.reason, "probe_failed")
@@ -2942,16 +2764,12 @@ class TestHealthDetailsAndLogging(unittest.TestCase):
             "signals": {"repeat_trigger": True},
         }
 
-        with patch.object(repair_module, "probe_health", return_value=ok_health), patch.object(
-            repair_module, "probe_status", return_value=ok_status
-        ), patch.object(
-            repair_module, "probe_logs", return_value=logs_probe
-        ), patch.object(
-            repair_module, "_probe_session_transcripts", return_value=transcripts
-        ), patch.object(
-            repair_module, "_analyze_anomaly_guard", return_value=transcript_result
+        with patch.object(repair_runtime_module, "probe_health", return_value=ok_health), patch.object(repair_runtime_module, "probe_status", return_value=ok_status
+        ), patch.object(repair_runtime_module, "probe_logs", return_value=logs_probe
+        ), patch.object(repair_runtime_module, "_probe_session_transcripts", return_value=transcripts
+        ), patch.object(repair_runtime_module, "_analyze_anomaly_guard", return_value=transcript_result
         ) as analyze_mock:
-            evaluation = repair_module._evaluate_health(cfg)
+            evaluation = repair_runtime_module._evaluate_health(cfg)
 
         self.assertFalse(evaluation.effective_healthy)
         self.assertEqual(evaluation.reason, "anomaly_guard")
@@ -2983,16 +2801,12 @@ class TestHealthDetailsAndLogging(unittest.TestCase):
             ],
         }
 
-        with patch.object(repair_module, "probe_health", return_value=ok_health), patch.object(
-            repair_module, "probe_status", return_value=ok_status
-        ), patch.object(
-            repair_module, "probe_logs", return_value=logs_probe
-        ), patch.object(
-            repair_module, "_probe_session_transcripts", return_value=[]
-        ), patch.object(
-            repair_module, "_analyze_anomaly_guard", return_value=anomaly_result
+        with patch.object(repair_runtime_module, "probe_health", return_value=ok_health), patch.object(repair_runtime_module, "probe_status", return_value=ok_status
+        ), patch.object(repair_runtime_module, "probe_logs", return_value=logs_probe
+        ), patch.object(repair_runtime_module, "_probe_session_transcripts", return_value=[]
+        ), patch.object(repair_runtime_module, "_analyze_anomaly_guard", return_value=anomaly_result
         ):
-            evaluation = repair_module._evaluate_health(cfg)
+            evaluation = repair_runtime_module._evaluate_health(cfg)
 
         self.assertFalse(evaluation.effective_healthy)
         self.assertEqual(evaluation.reason, "queue_contamination")
@@ -3020,16 +2834,12 @@ class TestHealthDetailsAndLogging(unittest.TestCase):
             ],
         }
 
-        with patch.object(repair_module, "probe_health", return_value=ok_health), patch.object(
-            repair_module, "probe_status", return_value=ok_status
-        ), patch.object(
-            repair_module, "probe_logs", return_value=logs_probe
-        ), patch.object(
-            repair_module, "_probe_session_transcripts", return_value=[{"entries": []}]
-        ), patch.object(
-            repair_module, "_analyze_anomaly_guard", return_value=anomaly_result
+        with patch.object(repair_runtime_module, "probe_health", return_value=ok_health), patch.object(repair_runtime_module, "probe_status", return_value=ok_status
+        ), patch.object(repair_runtime_module, "probe_logs", return_value=logs_probe
+        ), patch.object(repair_runtime_module, "_probe_session_transcripts", return_value=[{"entries": []}]
+        ), patch.object(repair_runtime_module, "_analyze_anomaly_guard", return_value=anomaly_result
         ):
-            evaluation = repair_module._evaluate_health(cfg)
+            evaluation = repair_runtime_module._evaluate_health(cfg)
 
         self.assertFalse(evaluation.effective_healthy)
         self.assertEqual(evaluation.reason, "queue_contamination")
@@ -3409,23 +3219,25 @@ class TestMonitorLoop(unittest.TestCase):
 
 
 class TestRepairFacadeStructure(unittest.TestCase):
-    def test_repair_all_includes_public_entry_and_compat_symbols(self) -> None:
+    def test_repair_all_is_limited_to_public_api(self) -> None:
         self.assertIn("attempt_repair", repair_module.__all__)
         self.assertIn("RepairResult", repair_module.__all__)
-        self.assertIn("_evaluate_health", repair_module.__all__)
-        self.assertIn("SessionPauseStage", repair_module.__all__)
+        self.assertIn("write_repair_progress", repair_module.__all__)
+        self.assertNotIn("_evaluate_health", repair_module.__all__)
+        self.assertNotIn("SessionPauseStage", repair_module.__all__)
 
-    def test_state_machine_hooks_are_grouped_without_dropping_compat_exports(self) -> None:
-        hooks = repair_module._build_repair_state_machine_hooks()
+    def test_state_machine_hooks_are_grouped_around_impl_modules(self) -> None:
+        hooks = repair_runtime_module._build_repair_state_machine_hooks()
 
         self.assertTrue(hasattr(hooks, "runtime"))
         self.assertTrue(hasattr(hooks, "messages"))
         self.assertTrue(hasattr(hooks, "stages"))
-        self.assertTrue(callable(hooks.runtime.evaluate_health_fn))
+        self.assertIs(hooks.runtime.evaluate_health_fn, repair_runtime_module._evaluate_health)
+        self.assertIs(hooks.runtime.ask_user_enable_ai_fn, notify_module._ask_user_enable_ai)
         self.assertTrue(callable(hooks.messages.repair_backup_failed_fn))
-        self.assertIs(hooks.stages.session_pause_stage_cls, repair_module.SessionPauseStage)
-        self.assertTrue(callable(repair_module._evaluate_health))
-        self.assertTrue(callable(repair_module._run_ai_repair))
+        self.assertIs(hooks.stages.session_pause_stage_cls, stages_module.SessionPauseStage)
+        self.assertTrue(callable(repair_runtime_module._evaluate_health))
+        self.assertTrue(callable(repair_runtime_module._run_ai_repair))
 
 
 if __name__ == "__main__":

@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
-from pathlib import Path
 from typing import Callable
 
 from .config import (
@@ -28,7 +26,6 @@ from .protocol import (
     build_check_payload,
     build_config_payload,
     build_repair_payload,
-    build_service_reconcile_payload,
     build_status_payload,
 )
 from .repair import attempt_repair
@@ -37,21 +34,12 @@ from .state import FileLock, State, StateStore
 
 from .cli_commands.parser import build_parser as _build_parser
 from .cli_commands.service import (
-    _collect_launchd_service_status as _collect_launchd_service_status_impl,
-    _copy_fix_my_claw_to_stable_service_path as _copy_fix_my_claw_to_stable_service_path_impl,
-    _ensure_launchd_service_unloaded as _ensure_launchd_service_unloaded_impl,
-    _generate_launchd_plist as _generate_launchd_plist_impl,
-    _get_fix_my_claw_path as _get_fix_my_claw_path_impl,
-    _get_launchd_domain as _get_launchd_domain_impl,
-    _get_launchd_job_target as _get_launchd_job_target_impl,
-    _get_launchd_label as _get_launchd_label_impl,
-    _get_launchd_plist_path as _get_launchd_plist_path_impl,
-    _get_launchd_service_binary_path as _get_launchd_service_binary_path_impl,
-    _launchctl_run as _launchctl_run_impl,
-    _launchd_service_loaded as _launchd_service_loaded_impl,
-    _restart_launchd_service as _restart_launchd_service_impl,
-    _service_platform_supported as _service_platform_supported_impl,
-    _service_reconcile_reasons as _service_reconcile_reasons_impl,
+    cmd_service_install as _cmd_service_install_impl,
+    cmd_service_reconcile as _cmd_service_reconcile_impl,
+    cmd_service_start as _cmd_service_start_impl,
+    cmd_service_status as _cmd_service_status_impl,
+    cmd_service_stop as _cmd_service_stop_impl,
+    cmd_service_uninstall as _cmd_service_uninstall_impl,
 )
 
 
@@ -261,303 +249,39 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     return 0
 
 
-def _service_platform_supported() -> bool:
-    return _service_platform_supported_impl()
-
-
-def _get_launchd_label() -> str:
-    return _get_launchd_label_impl()
-
-
-def _get_launchd_plist_path() -> Path:
-    return _get_launchd_plist_path_impl()
-
-
-def _get_launchd_domain() -> str:
-    return _get_launchd_domain_impl()
-
-
-def _get_launchd_job_target() -> str:
-    return _get_launchd_job_target_impl()
-
-
-def _get_launchd_service_binary_path() -> Path:
-    return _get_launchd_service_binary_path_impl()
-
-
-def _get_fix_my_claw_path() -> str:
-    return _get_fix_my_claw_path_impl()
-
-
-def _launchctl_run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return _launchctl_run_impl(*args, check=check)
-
-
-def _generate_launchd_plist(cfg: AppConfig, config_path: str) -> bytes:
-    import fix_my_claw.cli_commands.service as _service_module
-
-    original = _service_module._get_launchd_service_binary_path
-    try:
-        _service_module._get_launchd_service_binary_path = _get_launchd_service_binary_path
-        return _generate_launchd_plist_impl(cfg, config_path)
-    finally:
-        _service_module._get_launchd_service_binary_path = original
-
-
-def _copy_fix_my_claw_to_stable_service_path() -> tuple[Path, bool]:
-    import fix_my_claw.cli_commands.service as _service_module
-
-    original_get_fix_my_claw_path = _service_module._get_fix_my_claw_path
-    original_get_launchd_service_binary_path = _service_module._get_launchd_service_binary_path
-    try:
-        _service_module._get_fix_my_claw_path = _get_fix_my_claw_path
-        _service_module._get_launchd_service_binary_path = _get_launchd_service_binary_path
-        return _copy_fix_my_claw_to_stable_service_path_impl()
-    finally:
-        _service_module._get_fix_my_claw_path = original_get_fix_my_claw_path
-        _service_module._get_launchd_service_binary_path = original_get_launchd_service_binary_path
-
-
-def _launchd_service_loaded() -> bool:
-    import fix_my_claw.cli_commands.service as _service_module
-
-    original = _service_module._launchctl_run
-    try:
-        _service_module._launchctl_run = _launchctl_run
-        return _launchd_service_loaded_impl()
-    finally:
-        _service_module._launchctl_run = original
-
-
-def _ensure_launchd_service_unloaded(plist_path: Path) -> None:
-    import fix_my_claw.cli_commands.service as _service_module
-
-    original = _service_module._launchctl_run
-    try:
-        _service_module._launchctl_run = _launchctl_run
-        _ensure_launchd_service_unloaded_impl(plist_path)
-    finally:
-        _service_module._launchctl_run = original
-
-
-def _collect_launchd_service_status(
-    *,
-    config_path: str | None,
-    ignore_launchctl_errors: bool = False,
-) -> dict[str, object]:
-    import fix_my_claw.cli_commands.service as _service_module
-
-    original_get_launchd_plist_path = _service_module._get_launchd_plist_path
-    original_launchctl_run = _service_module._launchctl_run
-    original_get_launchd_service_binary_path = _service_module._get_launchd_service_binary_path
-    try:
-        _service_module._get_launchd_plist_path = _get_launchd_plist_path
-        _service_module._launchctl_run = _launchctl_run
-        _service_module._get_launchd_service_binary_path = _get_launchd_service_binary_path
-        return _collect_launchd_service_status_impl(
-            config_path=config_path,
-            ignore_launchctl_errors=ignore_launchctl_errors,
-        )
-    finally:
-        _service_module._get_launchd_plist_path = original_get_launchd_plist_path
-        _service_module._launchctl_run = original_launchctl_run
-        _service_module._get_launchd_service_binary_path = original_get_launchd_service_binary_path
-
-
-def _restart_launchd_service(cfg: AppConfig, config_path: str, plist_path: Path) -> None:
-    import fix_my_claw.cli_commands.service as _service_module
-
-    original_generate_launchd_plist = _service_module._generate_launchd_plist
-    original_ensure_launchd_service_unloaded = _service_module._ensure_launchd_service_unloaded
-    original_launchctl_run = _service_module._launchctl_run
-    try:
-        _service_module._generate_launchd_plist = _generate_launchd_plist
-        _service_module._ensure_launchd_service_unloaded = _ensure_launchd_service_unloaded
-        _service_module._launchctl_run = _launchctl_run
-        _restart_launchd_service_impl(cfg, config_path, plist_path)
-    finally:
-        _service_module._generate_launchd_plist = original_generate_launchd_plist
-        _service_module._ensure_launchd_service_unloaded = original_ensure_launchd_service_unloaded
-        _service_module._launchctl_run = original_launchctl_run
-
-
-def _service_reconcile_reasons(
-    *,
-    status_payload: dict[str, object],
-    binary_updated: bool,
-) -> list[str]:
-    return _service_reconcile_reasons_impl(
-        status_payload=status_payload,
-        binary_updated=binary_updated,
-    )
-
-
-def _reconcile_launchd_service(cfg: AppConfig, config_path: str) -> dict[str, object]:
-    initial_status = _collect_launchd_service_status(config_path=config_path)
-    _, binary_updated = _copy_fix_my_claw_to_stable_service_path()
-    reasons = _service_reconcile_reasons(
-        status_payload=initial_status,
-        binary_updated=binary_updated,
-    )
-
-    action = "noop"
-    plist_path = _get_launchd_plist_path()
-    installed = bool(initial_status["installed"])
-    running = bool(initial_status["running"])
-    drifted = bool(initial_status["drifted"])
-
-    if not installed:
-        _restart_launchd_service(cfg, config_path, plist_path)
-        action = "installed"
-    elif drifted or binary_updated:
-        _restart_launchd_service(cfg, config_path, plist_path)
-        action = "updated"
-    elif not running:
-        _restart_launchd_service(cfg, config_path, plist_path)
-        action = "restarted"
-
-    final_status = _collect_launchd_service_status(config_path=config_path)
-    return build_service_reconcile_payload(
-        action=action,
-        reasons=reasons,
-        service=final_status,
-    )
-
-
-def _emit_service_status(payload: dict[str, object], *, as_json: bool) -> None:
-    if as_json:
-        print(json.dumps(payload, ensure_ascii=False))
-        return
-    print(f"installed={'true' if payload['installed'] else 'false'}")
-    print(f"running={'true' if payload['running'] else 'false'}")
-
-
 def cmd_service_install(args: argparse.Namespace) -> int:
-    if not _service_platform_supported():
-        print("service commands are supported on macOS only", file=sys.stderr)
-        return 1
-    cfg = _load_or_init_config(args.config, init_if_missing=True)
-    plist_path = _get_launchd_plist_path()
-    if plist_path.exists():
-        print(f"service already installed at {plist_path}", file=sys.stderr)
-        return 1
-
-    plist_created = False
-    bootstrapped = False
-
-    try:
-        _copy_fix_my_claw_to_stable_service_path()
-        plist_created = True
-        _restart_launchd_service(cfg, args.config, plist_path)
-        bootstrapped = True
-    except (FileNotFoundError, OSError, subprocess.CalledProcessError) as exc:
-        if bootstrapped:
-            _ensure_launchd_service_unloaded(plist_path)
-        if plist_created:
-            try:
-                plist_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-        print(f"error installing service: {exc}", file=sys.stderr)
-        return 1
-    print(str(plist_path))
-    return 0
+    return _cmd_service_install_impl(
+        args,
+        load_or_init_config_impl=_load_or_init_config,
+    )
 
 
 def cmd_service_uninstall(args: argparse.Namespace) -> int:
-    if not _service_platform_supported():
-        print("service commands are supported on macOS only", file=sys.stderr)
-        return 1
-    plist_path = _get_launchd_plist_path()
-    if not plist_path.exists():
-        print("service not installed")
-        return 0
-    try:
-        _ensure_launchd_service_unloaded(plist_path)
-    except subprocess.CalledProcessError as exc:
-        print(f"error stopping service: {exc.stderr.strip() if exc.stderr else exc}", file=sys.stderr)
-        return 1
-    try:
-        plist_path.unlink(missing_ok=True)
-    except OSError as exc:
-        print(f"error removing plist: {exc}", file=sys.stderr)
-        return 1
-    print("service uninstalled")
-    return 0
+    return _cmd_service_uninstall_impl(args)
 
 
 def cmd_service_start(args: argparse.Namespace) -> int:
-    if not _service_platform_supported():
-        print("service commands are supported on macOS only", file=sys.stderr)
-        return 1
-    config_path = getattr(args, "config", DEFAULT_CONFIG_PATH)
-    cfg = _load_or_init_config(config_path, init_if_missing=True)
-    plist_path = _get_launchd_plist_path()
-    if not plist_path.exists():
-        print("service not installed", file=sys.stderr)
-        return 1
-    try:
-        cfg.monitor.state_dir.mkdir(parents=True, exist_ok=True)
-        plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_bytes(_generate_launchd_plist(cfg, config_path))
-        _ensure_launchd_service_unloaded(plist_path)
-        _launchctl_run("bootstrap", _get_launchd_domain(), str(plist_path))
-        _launchctl_run("enable", _get_launchd_job_target())
-        _launchctl_run("kickstart", "-k", _get_launchd_job_target())
-    except (OSError, subprocess.CalledProcessError) as exc:
-        stderr = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
-        print(f"error starting service: {stderr}", file=sys.stderr)
-        return 1
-    print("service started")
-    return 0
+    return _cmd_service_start_impl(
+        args,
+        load_or_init_config_impl=_load_or_init_config,
+        default_config_path=DEFAULT_CONFIG_PATH,
+    )
 
 
 def cmd_service_stop(args: argparse.Namespace) -> int:
-    if not _service_platform_supported():
-        print("service commands are supported on macOS only", file=sys.stderr)
-        return 1
-    plist_path = _get_launchd_plist_path()
-    if not plist_path.exists():
-        print("service not installed")
-        return 0
-    try:
-        _ensure_launchd_service_unloaded(plist_path)
-    except subprocess.CalledProcessError as exc:
-        print(f"error stopping service: {exc.stderr.strip() if exc.stderr else exc}", file=sys.stderr)
-        return 1
-    print("service stopped")
-    return 0
+    return _cmd_service_stop_impl(args)
 
 
 def cmd_service_status(args: argparse.Namespace) -> int:
-    if not _service_platform_supported():
-        print("service commands are supported on macOS only", file=sys.stderr)
-        return 1
-    payload = _collect_launchd_service_status(
-        config_path=getattr(args, "config", DEFAULT_CONFIG_PATH),
-        ignore_launchctl_errors=True,
-    )
-    _emit_service_status(payload, as_json=args.json)
-    return 0
+    return _cmd_service_status_impl(args, default_config_path=DEFAULT_CONFIG_PATH)
 
 
 def cmd_service_reconcile(args: argparse.Namespace) -> int:
-    if not _service_platform_supported():
-        print("service commands are supported on macOS only", file=sys.stderr)
-        return 1
-    config_path = getattr(args, "config", DEFAULT_CONFIG_PATH)
-    cfg = _load_or_init_config(config_path, init_if_missing=True)
-    try:
-        payload = _reconcile_launchd_service(cfg, config_path)
-    except (FileNotFoundError, OSError, subprocess.CalledProcessError) as exc:
-        stderr = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
-        print(f"error reconciling service: {stderr}", file=sys.stderr)
-        return 1
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False))
-    else:
-        print(payload["action"])
-    return 0
+    return _cmd_service_reconcile_impl(
+        args,
+        load_or_init_config_impl=_load_or_init_config,
+        default_config_path=DEFAULT_CONFIG_PATH,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -595,21 +319,6 @@ __all__ = [
     "_load_or_init_config",
     "_load_config_or_default",
     "_with_single_instance",
-    "_get_fix_my_claw_path",
-    "_service_platform_supported",
-    "_get_launchd_label",
-    "_get_launchd_domain",
-    "_get_launchd_job_target",
-    "_get_launchd_plist_path",
-    "_get_launchd_service_binary_path",
-    "_launchctl_run",
-    "_launchd_service_loaded",
-    "_ensure_launchd_service_unloaded",
-    "_generate_launchd_plist",
-    "_copy_fix_my_claw_to_stable_service_path",
-    "_collect_launchd_service_status",
-    "_restart_launchd_service",
-    "_reconcile_launchd_service",
     "build_parser",
     "cmd_auto_repair",
     "cmd_check",

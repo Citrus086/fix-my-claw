@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .base import require_runtime_hooks
+
 if TYPE_CHECKING:
     from ..repair_types import RepairPipelineContext, StageResult
 
@@ -31,10 +33,10 @@ class FinalAssessmentStage:
         Returns:
             StageResult with health evaluation.
         """
-        from ..repair import _evaluate_with_context
         from ..repair_types import StageResult
 
-        evaluation, context = _evaluate_with_context(
+        runtime = require_runtime_hooks(ctx)
+        evaluation, context = runtime.evaluate_with_context_fn(
             ctx.cfg,
             ctx.attempt_dir,
             stage_name=self.stage_name,

@@ -17,6 +17,7 @@ from ..repair_types import (
     BackupArtifact,
     StageResult,
 )
+from .base import require_runtime_hooks, write_stage_progress
 
 if TYPE_CHECKING:
     from ..repair_types import RepairPipelineContext
@@ -44,29 +45,30 @@ class AiDecisionStage:
         Returns:
             StageResult with AiDecision payload.
         """
-        from ..repair import _ai_decision_notification_text, _ask_user_enable_ai, _dispatch_notification, write_repair_progress
-
-        write_repair_progress(
+        runtime = require_runtime_hooks(ctx)
+        write_stage_progress(
             ctx.cfg.monitor.state_dir,
-            stage="ai_decision",
-            status="running",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
+            "ai_decision",
+            "running",
+            str(ctx.attempt_dir.resolve()),
+            runtime.write_repair_progress_fn,
         )
-        decision = self.preset or _ask_user_enable_ai(ctx.cfg, ctx.attempt_dir)
+        decision = self.preset or runtime.ask_user_enable_ai_fn(ctx.cfg, ctx.attempt_dir)
         payload = AiDecision.from_mapping(decision)
-        notification_text = _ai_decision_notification_text(payload)
-        write_repair_progress(
+        notification_text = runtime.ai_decision_notification_text_fn(payload)
+        write_stage_progress(
             ctx.cfg.monitor.state_dir,
-            stage="ai_decision",
-            status="completed",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
+            "ai_decision",
+            "completed",
+            str(ctx.attempt_dir.resolve()),
+            runtime.write_repair_progress_fn,
         )
         return StageResult(
             name="ai_decision",
             status="completed",
             payload=payload,
             notification=(
-                _dispatch_notification(
+                runtime.dispatch_notification_fn(
                     ctx.cfg,
                     kind="ai_approval_status",
                     source="ai_approval",
@@ -98,22 +100,23 @@ class BackupStage:
         Returns:
             StageResult with BackupArtifact payload.
         """
-        from ..repair import _backup_openclaw_state, _dispatch_notification, write_repair_progress
-
-        write_repair_progress(
+        runtime = require_runtime_hooks(ctx)
+        write_stage_progress(
             ctx.cfg.monitor.state_dir,
-            stage="backup",
-            status="running",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
+            "backup",
+            "running",
+            str(ctx.attempt_dir.resolve()),
+            runtime.write_repair_progress_fn,
         )
         try:
-            artifact = BackupArtifact.from_mapping(_backup_openclaw_state(ctx.cfg, ctx.attempt_dir))
+            artifact = BackupArtifact.from_mapping(runtime.backup_openclaw_state_fn(ctx.cfg, ctx.attempt_dir))
         except Exception as exc:
-            write_repair_progress(
+            write_stage_progress(
                 ctx.cfg.monitor.state_dir,
-                stage="backup",
-                status="failed",
-                attempt_dir=str(ctx.attempt_dir.resolve()),
+                "backup",
+                "failed",
+                str(ctx.attempt_dir.resolve()),
+                runtime.write_repair_progress_fn,
             )
             return StageResult(
                 name="backup",
@@ -121,17 +124,18 @@ class BackupStage:
                 payload=BackupArtifact(error=str(exc)),
                 stop_reason="backup_error",
             )
-        write_repair_progress(
+        write_stage_progress(
             ctx.cfg.monitor.state_dir,
-            stage="backup",
-            status="completed",
-            attempt_dir=str(ctx.attempt_dir.resolve()),
+            "backup",
+            "completed",
+            str(ctx.attempt_dir.resolve()),
+            runtime.write_repair_progress_fn,
         )
         return StageResult(
             name="backup",
             status="completed",
             payload=artifact,
-            notification=_dispatch_notification(
+            notification=runtime.dispatch_notification_fn(
                 ctx.cfg,
                 kind="ai_approval_status",
                 source="ai_approval",
@@ -162,11 +166,10 @@ class AiRepairStage:
         Returns:
             StageResult with AiRepairStageData and health evaluation.
         """
-        from ..repair import _evaluate_with_context, _run_ai_repair
-
-        result = _run_ai_repair(ctx.cfg, ctx.attempt_dir, code_stage=self.code_stage)
+        runtime = require_runtime_hooks(ctx)
+        result = runtime.run_ai_repair_fn(ctx.cfg, ctx.attempt_dir, code_stage=self.code_stage)
         stage_suffix = "code" if self.code_stage else "config"
-        evaluation, context = _evaluate_with_context(
+        evaluation, context = runtime.evaluate_with_context_fn(
             ctx.cfg,
             ctx.attempt_dir,
             stage_name=f"after_ai_{stage_suffix}",
